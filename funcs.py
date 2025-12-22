@@ -14,6 +14,10 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GroupKFold
 import tqdm
 
+# ============================================================
+# 1) Core λ-max / QUT machinery (infinity-norm program + null sims)
+# ============================================================
+
 def solve_infinity_norm(y, X, D, project_grad_h=False):
     m = D.shape[0]
 
@@ -63,6 +67,7 @@ def solve_infinity_norm(y, X, D, project_grad_h=False):
 
     return w.value, prob.value
 
+
 def lambda_qut(X, y, D_TV, MC=100):
     X0 = X @ np.ones((X.shape[1], 1))
     clf = LogisticRegression(fit_intercept=False, solver='lbfgs')
@@ -108,6 +113,58 @@ def lambda_qut(X, y, D_TV, MC=100):
     print(f"λ_qut (95th percentile null): {lambda_qut_val:.4f}")
     print(f"λ_max (data): {lambda_max:.4f}")
     return lambda_qut_val, lambda_max, Lambdas
+
+
+# ============================================================
+# 2) Grid / design-matrix builders (X, y, D_TV)
+# ============================================================
+
+def grid(df):
+    grid_width = 20
+    grid_height = 10
+    num_bins = grid_width * grid_height
+    
+    # Step 1: Map each (x_bin, y_bin) to index
+    bin_to_index = {(x, y): x * grid_height + y for x in range(grid_width) for y in range(grid_height)}
+    
+    # Step 2: Prepare possession-level feature matrix X and outcome vector y
+    possessions = df['possession_number'].unique()
+    n_possessions = len(possessions)
+    X = lil_matrix((n_possessions, num_bins), dtype=np.float32)
+    y = np.array([group['scored'].iloc[0] for _, group in df.groupby('possession_number')], dtype=np.int8)
+    possession_to_index = {p: i for i, p in enumerate(possessions)}
+    
+    for pid, group in df.groupby('possession_number'):
+        i = possession_to_index[pid]
+        visited_bins = set(zip(group['x_bin'], group['y_bin']))
+        for xb, yb in visited_bins:
+            if (xb, yb) in bin_to_index:
+                X[i, bin_to_index[(xb, yb)]] = 1
+        y[i] = group['scored'].iloc[0]
+    
+    rows = []
+    for xx in range(grid_width - 1):
+        for yy in range(grid_height):
+            i = xx * grid_height + yy
+            row = np.zeros(num_bins)
+            row[i] = -1
+            row[i + grid_height] = 1
+            rows.append(row)
+    
+    for xx in range(grid_width):
+        for yy in range(grid_height - 1):
+            i = xx * grid_height + yy
+            row = np.zeros(num_bins)
+            row[i] = -1
+            row[i + 1] = 1
+            rows.append(row)
+    D_TV = np.vstack(rows)
+    return X, y, D_TV
+
+
+# ============================================================
+# 3) TV-logistic model solvers (single fit)
+# ============================================================
 
 def tv_logistic_regression_heatmap(df, lambda_tv=1.0, grid_width=20, grid_height=10, court_image_path="court.jpg", plot = False):
     num_bins = grid_width * grid_height
@@ -181,47 +238,6 @@ def tv_logistic_regression_heatmap(df, lambda_tv=1.0, grid_width=20, grid_height
 
     return beta_est
 
-def grid(df):
-    grid_width = 20
-    grid_height = 10
-    num_bins = grid_width * grid_height
-    
-    # Step 1: Map each (x_bin, y_bin) to index
-    bin_to_index = {(x, y): x * grid_height + y for x in range(grid_width) for y in range(grid_height)}
-    
-    # Step 2: Prepare possession-level feature matrix X and outcome vector y
-    possessions = df['possession_number'].unique()
-    n_possessions = len(possessions)
-    X = lil_matrix((n_possessions, num_bins), dtype=np.float32)
-    y = np.array([group['scored'].iloc[0] for _, group in df.groupby('possession_number')], dtype=np.int8)
-    possession_to_index = {p: i for i, p in enumerate(possessions)}
-    
-    for pid, group in df.groupby('possession_number'):
-        i = possession_to_index[pid]
-        visited_bins = set(zip(group['x_bin'], group['y_bin']))
-        for xb, yb in visited_bins:
-            if (xb, yb) in bin_to_index:
-                X[i, bin_to_index[(xb, yb)]] = 1
-        y[i] = group['scored'].iloc[0]
-    
-    rows = []
-    for xx in range(grid_width - 1):
-        for yy in range(grid_height):
-            i = xx * grid_height + yy
-            row = np.zeros(num_bins)
-            row[i] = -1
-            row[i + grid_height] = 1
-            rows.append(row)
-    
-    for xx in range(grid_width):
-        for yy in range(grid_height - 1):
-            i = xx * grid_height + yy
-            row = np.zeros(num_bins)
-            row[i] = -1
-            row[i + 1] = 1
-            rows.append(row)
-    D_TV = np.vstack(rows)
-    return X, y, D_TV
 
 def solve_tv_logistic_regression(df, lambda_tv=1.0, grid_width=20, grid_height=10):
     num_bins = grid_width * grid_height
@@ -269,26 +285,10 @@ def solve_tv_logistic_regression(df, lambda_tv=1.0, grid_width=20, grid_height=1
 
     return beta_grid.value  # No plotting
 
-def bootstrap_tv_logistic(df, B=100, lambda_tv=1.0, seed=42):
-    np.random.seed(seed)
-    possessions = df['possession_number'].unique()
-    grid_width, grid_height = 20, 10
-    beta_bootstrap = np.zeros((B, grid_width, grid_height))
 
-    for b in tqdm.tqdm(range(B), desc="Bootstrapping"):
-        sample_ids = np.random.choice(possessions, size=len(possessions), replace=True)
-        df_sample = df[df['possession_number'].isin(sample_ids)]
-        
-        try:
-            beta_b = solve_tv_logistic_regression(df_sample, lambda_tv=lambda_tv,
-                                                    grid_width=grid_width, grid_height=grid_height)
-                                                    #court_image_path="court.jpg")
-            beta_bootstrap[b] = beta_b
-        except RuntimeError as e:
-            print(f"Bootstrap {b} failed: {e}")
-            continue
-
-    return beta_bootstrap
+# ============================================================
+# 4) Bootstrapping: dataset generation + repeated model fits
+# ============================================================
 
 def generate_bootstrapped_datasets(
     original_df,
@@ -344,11 +344,156 @@ def generate_bootstrapped_datasets(
 
     return bootstrapped_datasets
 
+
+def bootstrap_tv_logistic(df, B=100, lambda_tv=1.0, seed=42):
+    np.random.seed(seed)
+    possessions = df['possession_number'].unique()
+    grid_width, grid_height = 20, 10
+    beta_bootstrap = np.zeros((B, grid_width, grid_height))
+
+    for b in tqdm.tqdm(range(B), desc="Bootstrapping"):
+        sample_ids = np.random.choice(possessions, size=len(possessions), replace=True)
+        df_sample = df[df['possession_number'].isin(sample_ids)]
+        
+        try:
+            beta_b = solve_tv_logistic_regression(df_sample, lambda_tv=lambda_tv,
+                                                    grid_width=grid_width, grid_height=grid_height)
+                                                    #court_image_path="court.jpg")
+            beta_bootstrap[b] = beta_b
+        except RuntimeError as e:
+            print(f"Bootstrap {b} failed: {e}")
+            continue
+
+    return beta_bootstrap
+
+
+def generate_beta_samples_from_bootstraps(boot_datasets, lambda_tv=1.0):
+    beta_list = []
+
+    for df_b in tqdm.tqdm(boot_datasets, desc="Solving TV-Logistic"):
+        try:
+            beta_b = solve_tv_logistic_regression(df_b, lambda_tv=lambda_tv)
+            beta_list.append(beta_b)
+        except RuntimeError as e:
+            print("Skipped due to optimization failure:", e)
+            continue
+
+    return np.stack(beta_list)
+
+
+# ============================================================
+# 5) λ-max over bootstraps + λ-max summary stats
+# ============================================================
+
+def compute_lambda_max_from_bootstraps(boot_datasets, D_TV, solve_lambda_func, project_grad_h=True):
+    lambda_max_list = []
+
+    for df_b in tqdm.tqdm(boot_datasets, desc="Computing λ_max for bootstraps"):
+        # Build X, y from each bootstrapped dataset
+        possessions = df_b['possession_number'].unique()
+        grid_width, grid_height = 20, 10
+        num_bins = grid_width * grid_height
+
+        X = lil_matrix((len(possessions), num_bins), dtype=np.float32)
+        y = np.array([group['scored'].iloc[0] for _, group in df_b.groupby('possession_number')], dtype=np.int8)
+        possession_to_index = {p: i for i, p in enumerate(possessions)}
+        bin_to_index = {(x, y): x * grid_height + y for x in range(grid_width) for y in range(grid_height)}
+
+        for pid, group in df_b.groupby('possession_number'):
+            i = possession_to_index[pid]
+            visited_bins = set(zip(group['x_bin'], group['y_bin']))
+            for xb, yb in visited_bins:
+                if (xb, yb) in bin_to_index:
+                    X[i, bin_to_index[(xb, yb)]] = 1
+
+        try:
+            _, lambda_max_b = solve_lambda_func(y, X, D_TV, project_grad_h=project_grad_h)
+            if np.isfinite(lambda_max_b):
+                lambda_max_list.append(lambda_max_b)
+        except:
+            continue
+
+    return np.array(lambda_max_list)
+
+
+def summarize_lambda_max_analysis(
+    lambda_max_obs,
+    lambda_max_null,
+    lambda_max_bootstrap,
+    plot=True
+):
+    """
+    Summarize the λ_max statistical test including CI, p-value, and QUT.
+
+    Parameters:
+    - lambda_max_obs (float): Observed λ_max from real or bootstrapped data
+    - lambda_max_null (array-like): λ_max values simulated under the null
+    - lambda_max_bootstrap (array-like): λ_max values from bootstrapped real data
+    - plot (bool): Whether to plot the distributions
+
+    Returns:
+    - dict with keys: 'lambda_qut', 'lambda_max_obs', 'ci', 'p_value'
+    """
+
+    lambda_max_null = np.asarray(lambda_max_null)
+    lambda_max_bootstrap = np.asarray(lambda_max_bootstrap)
+
+    lambda_qut = np.percentile(lambda_max_null, 95)
+    ci_lower, ci_upper = np.quantile(lambda_max_bootstrap, [0.025, 0.975])
+    p_val = np.mean(lambda_max_null >= lambda_max_obs)
+
+    print(f"λ_qut (95th percentile null): {lambda_qut:.4f}")
+    print(f"λ_max (observed): {lambda_max_obs:.4f}")
+    print(f"95% CI for λ_max (bootstrap): [{ci_lower:.4f}, {ci_upper:.4f}]")
+    print(f"Empirical p-value (λ_max > λ_qut): {p_val:.4f}")
+
+    if plot:
+        import matplotlib.pyplot as plt
+        plt.figure(figsize=(10, 6))
+        plt.hist(lambda_max_null, bins=50, alpha=0.5, label="λ_max (null)", color="gray")
+        plt.hist(lambda_max_bootstrap, bins=50, alpha=0.5, label="λ_max (bootstrap)", color="skyblue")
+        plt.axvline(lambda_qut, color="black", linestyle="--", label="λ_qut (95%)")
+        plt.axvline(lambda_max_obs, color="red", linestyle="--", label="λ_max (observed)")
+        plt.xlabel("λ_max")
+        plt.ylabel("Frequency")
+        plt.title("λ_max: Bootstrap vs. Null Distribution")
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+
+    return {
+        "lambda_qut": lambda_qut,
+        "lambda_max_obs": lambda_max_obs,
+        "ci": (ci_lower, ci_upper),
+        "p_value": p_val
+    }
+
+
+# ============================================================
+# 6) Beta-map summaries (statistics) + plotting helpers
+# ============================================================
+
 def compute_beta_statistics(beta_samples):
     beta_mean = np.mean(beta_samples, axis=0)
     beta_std = np.std(beta_samples, axis=0)
     beta_iqr = np.percentile(beta_samples, 75, axis=0) - np.percentile(beta_samples, 25, axis=0)
     return beta_mean, beta_std, beta_iqr
+
+
+def compute_beta_summary_stats(beta_samples):
+    """
+    Compute mean and std dev per cell from bootstrapped beta samples.
+    
+    Parameters:
+        beta_samples (np.ndarray): shape (B, grid_width, grid_height)
+        
+    Returns:
+        beta_mean, beta_std (both np.ndarray): shape (grid_width, grid_height)
+    """
+    beta_mean = np.mean(beta_samples, axis=0)
+    beta_std = np.std(beta_samples, axis=0)
+    return beta_mean, beta_std
+
 
 def plot_beta_spread(beta_mean, beta_std, beta_iqr, title_prefix=""):
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
@@ -364,3 +509,234 @@ def plot_beta_spread(beta_mean, beta_std, beta_iqr, title_prefix=""):
     plt.tight_layout()
     plt.show()
 
+
+def plot_beta_mean_std(beta_mean, beta_std, court_image_path=None):
+    """
+    Visualize mean and standard deviation of beta values across the court grid.
+    """
+    import matplotlib.pyplot as plt
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+    titles = ["Mean of β (Bootstrapped)", "Standard Deviation of β"]
+    matrices = [beta_mean, beta_std]
+    cmaps = ["viridis", "plasma"]
+
+    for ax, data, title, cmap in zip(axes, matrices, titles, cmaps):
+        if court_image_path:
+            from PIL import Image
+            court_img = Image.open(court_image_path)
+            ax.imshow(court_img, extent=[0, 20, 0, 10], aspect='auto')
+
+        im = ax.imshow(data.T, origin="lower", extent=[0, 20, 0, 10],
+                       cmap=cmap, alpha=0.7)
+        ax.set_title(title)
+        ax.set_xlabel("Court X")
+        ax.set_ylabel("Court Y")
+        plt.colorbar(im, ax=ax, shrink=0.8)
+
+    plt.tight_layout()
+    plt.show()
+
+
+# ============================================================
+# 7) Pointwise percentile maps at fixed λ (logit scale) + plotting
+# ============================================================
+
+def bootstrap_percentile_maps_fixed_lambda(
+    boot_datasets,             # list of bootstrapped DataFrames
+    lambda_tv,                 # fixed λ (e.g., lambda_qut or lambda_max)
+    grid_width, grid_height,   # grid shape
+    court_image_path="court.jpg",
+    alpha=0.05,
+    show_progress=True
+):
+    """
+    Calls tv_logistic_regression_heatmap on each bootstrap with fixed λ.
+    Collects *logit* maps and returns percentile summaries on the logit scale.
+    """
+    B = len(boot_datasets)
+    maps = None
+    rng = np.random.default_rng(0)
+
+    it = trange(B, desc=f"Bootstraps @ generated λ={lambda_tv:.4g}") if show_progress else range(B)
+    for b in it:
+        df_b = boot_datasets[b]
+
+        out = tv_logistic_regression_heatmap(
+            df_b,
+            lambda_tv=lambda_tv,
+            grid_width=grid_width,
+            grid_height=grid_height,
+            court_image_path=court_image_path,
+            plot=False  # no plotting in loop
+        )
+
+        # Your function may return either logits or (logits, prob_map).
+        beta_logit = out[0] if isinstance(out, tuple) else out  # ensure we keep logits
+        if maps is None:
+            maps = np.empty((B, grid_width, grid_height), dtype=np.float32)
+        maps[b] = beta_logit
+
+    # Pointwise percentile summaries on the logit scale
+    q_lo, q_hi = alpha/2, 1 - alpha/2
+    logit_lo  = np.quantile(maps, q_lo, axis=0)
+    logit_med = np.median(maps, axis=0)
+    logit_hi  = np.quantile(maps, q_hi, axis=0)
+
+    return logit_med, logit_lo, logit_hi, maps
+
+
+def plot_three_maps(logit_lo, logit_med, logit_hi, court_image_path, vlim=None):
+    # Suggest a symmetric vlim if not provided, using robust percentiles
+    if vlim is None:
+        v = np.percentile(np.abs(np.stack([logit_lo, logit_med, logit_hi])), 95)
+        vlim = (-float(v), float(v))
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    img = mpimg.imread(court_image_path)
+
+    for ax, data, title in zip(
+        axes,
+        [logit_lo, logit_med, logit_hi],
+        ["Conservative (Lower, logit)", "Realistic (Median, logit)", "Optimistic (Upper, logit)"]
+    ):
+        ax.imshow(img, extent=[0, data.shape[0], 0, data.shape[1]], aspect='auto')
+        im = ax.imshow(
+            data.T, origin="lower",
+            extent=[0, data.shape[0], 0, data.shape[1]],
+            cmap="coolwarm", alpha=0.75, vmin=vlim[0], vmax=vlim[1]
+        )
+        ax.set_xlabel("x_bin"); ax.set_ylabel("y_bin"); ax.set_title(title)
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="Logit (β̂)")
+
+    plt.tight_layout(); plt.show()
+
+
+# ============================================================
+# 8) End-to-end per-period analysis pipeline
+# ============================================================
+
+def analyze_tv_logistic_per_period(
+    df_original,
+    n_bootstraps=100,
+    n_possessions=500,
+    samples_per_possession=100,
+    min_samples_required=100,
+    grid_width=20,
+    grid_height=10,
+    # null + plotting controls
+    mc_null=500,                      # number of Monte Carlo null simulations per period
+    alpha=0.05,                       # confidence level for pointwise maps
+    court_image_path="court.jpg",
+    show_progress=True,
+    plot_beta_summary=True,
+    plot_pointwise_maps=True,
+    plot_lambda_distributions=True,
+    seed_base=42
+):
+    """
+    For each period:
+      • Builds bootstrap datasets
+      • Computes λ_qut for that period via Monte Carlo null simulations
+      • Computes β summaries (mean/std) at λ = λ_qut(period)
+      • Computes λ statistics (λ_max_obs, bootstrap CI, p-value) using summarize_lambda_max_analysis()
+      • Computes pointwise percentile maps (logit) at λ = λ_qut(period)
+
+    Notes:
+      - λ_qut is computed separately for each period using the same D_TV structure.
+      - The p-value returned by summarize_lambda_max_analysis is computed as
+        mean(lambda_max_null >= lambda_max_obs).
+    """
+    rng = np.random.default_rng(seed_base)
+    period_results = {}
+    periods = sorted(df_original['period'].unique())
+
+    for period in periods:
+        print(f"\n=== Processing Period {period} ===")
+
+        df_period = df_original[df_original['period'] == period]
+
+        # ---------- Step 0: Bootstrap datasets ----------
+        boot_datasets = generate_bootstrapped_datasets(
+            df_period,
+            n_bootstraps=n_bootstraps,
+            n_possessions_per_bootstrap=n_possessions,
+            samples_per_possession=samples_per_possession,
+            min_samples_required=min_samples_required,
+            seed=seed_base + period
+        )
+
+        # ---------- Step 1: Compute λ_qut for this period ----------
+        df_boot = boot_datasets[0]
+        X, y, D_TV = grid(df_boot)
+
+        lambda_qut_val, lambda_max_obs, lambdas_null = lambda_qut(X, y, D_TV, MC=mc_null)
+        print(f"λ_qut (period {period}): {lambda_qut_val:.4f}")
+
+        # ---------- Step 2: β summaries using λ_qut ----------
+        beta_samples = generate_beta_samples_from_bootstraps(
+            boot_datasets,
+            lambda_tv=lambda_qut_val
+        )
+        beta_mean, beta_std = compute_beta_summary_stats(beta_samples)
+        if plot_beta_summary:
+            plot_beta_mean_std(beta_mean, beta_std, court_image_path=court_image_path)
+
+        # ---------- Step 3: Bootstrap λ_max and summarize ----------
+        lambda_max_bootstrap = compute_lambda_max_from_bootstraps(
+            boot_datasets,
+            D_TV,
+            solve_lambda_func=solve_infinity_norm
+        )
+
+        stats = summarize_lambda_max_analysis(
+            lambda_max_obs=float(lambda_max_obs),
+            lambda_max_null=np.asarray(lambdas_null, dtype=float),
+            lambda_max_bootstrap=np.asarray(lambda_max_bootstrap, dtype=float),
+            plot=plot_lambda_distributions
+        )
+
+        # ---------- Step 4: Pointwise percentile maps using λ_qut ----------
+        logit_med, logit_lo, logit_hi, maps_all = bootstrap_percentile_maps_fixed_lambda(
+            boot_datasets=boot_datasets,
+            lambda_tv=lambda_qut_val,
+            grid_width=grid_width,
+            grid_height=grid_height,
+            court_image_path=court_image_path,
+            alpha=alpha,
+            show_progress=show_progress
+        )
+
+        if plot_pointwise_maps:
+            print(f"Plotting pointwise percentile maps at λ = {lambda_qut_val:.4f}")
+            plot_three_maps(logit_lo, logit_med, logit_hi, court_image_path=court_image_path)
+
+        # ---------- Step 5: Pack results ----------
+        period_results[period] = {
+            # β summaries at λ_qut
+            "beta_samples": beta_samples,
+            "beta_mean": beta_mean,
+            "beta_std": beta_std,
+
+            # λ statistics
+            "lambda_qut": lambda_qut_val,
+            "lambda_max_obs": stats["lambda_max_obs"],
+            "lambda_max_ci": stats["ci"],
+            "p_value": stats["p_value"],
+
+            # raw distributions
+            "lambda_null": np.asarray(lambdas_null, dtype=float),
+            "lambda_max_bootstrap": np.asarray(lambda_max_bootstrap, dtype=float),
+
+            # Pointwise percentile maps
+            "pointwise": {
+                "lambda": float(lambda_qut_val),
+                "alpha": float(alpha),
+                "logit_lo": logit_lo,
+                "logit_med": logit_med,
+                "logit_hi": logit_hi,
+                "maps": maps_all,   # shape: (B, grid_width, grid_height)
+            }
+        }
+
+    return period_results
