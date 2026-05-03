@@ -68,7 +68,7 @@ def solve_infinity_norm(y, X, D, project_grad_h=False):
     return w.value, prob.value
 
 
-def lambda_qut(X, y, D_TV, MC=100):
+def lambda_qut(X, y, D_TV, MC=1000):
     X0 = X @ np.ones((X.shape[1], 1))
     clf = LogisticRegression(fit_intercept=False, solver='lbfgs')
     clf.fit(X0, y)
@@ -673,21 +673,16 @@ def analyze_tv_logistic_per_period(
         lambda_qut_val, lambda_max_obs, lambdas_null = lambda_qut(X, y, D_TV, MC=mc_null)
         print(f"λ_qut (period {period}): {lambda_qut_val:.4f}")
 
-        # ---------- Step 2: β summaries using λ_qut ----------
-        beta_samples = generate_beta_samples_from_bootstraps(
-            boot_datasets,
-            lambda_tv=lambda_qut_val
-        )
-        beta_mean, beta_std = compute_beta_summary_stats(beta_samples)
-        if plot_beta_summary:
-            plot_beta_mean_std(beta_mean, beta_std, court_image_path=court_image_path)
-
-        # ---------- Step 3: Bootstrap λ_max and summarize ----------
-        lambda_max_bootstrap = compute_lambda_max_from_bootstraps(
-            boot_datasets,
+        # ---------- Step 2: Bootstrap λ_max and summarize ----------
+        lambda_max_bootstrap_rest = compute_lambda_max_from_bootstraps(
+            boot_datasets[1:],
             D_TV,
             solve_lambda_func=solve_infinity_norm
         )
+        lambda_max_bootstrap = np.concatenate([
+            np.asarray([lambda_max_obs], dtype=float),
+            np.asarray(lambda_max_bootstrap_rest, dtype=float)
+        ])
 
         stats = summarize_lambda_max_analysis(
             lambda_max_obs=float(lambda_max_obs),
@@ -696,7 +691,7 @@ def analyze_tv_logistic_per_period(
             plot=plot_lambda_distributions
         )
 
-        # ---------- Step 4: Pointwise percentile maps using λ_qut ----------
+        # ---------- Step 3: Pointwise percentile maps using λ_qut ----------
         logit_med, logit_lo, logit_hi, maps_all = bootstrap_percentile_maps_fixed_lambda(
             boot_datasets=boot_datasets,
             lambda_tv=lambda_qut_val,
@@ -706,6 +701,12 @@ def analyze_tv_logistic_per_period(
             alpha=alpha,
             show_progress=show_progress
         )
+
+        # ---------- Step 4: β summaries using the fitted pointwise maps ----------
+        beta_samples = maps_all
+        beta_mean, beta_std = compute_beta_summary_stats(beta_samples)
+        if plot_beta_summary:
+            plot_beta_mean_std(beta_mean, beta_std, court_image_path=court_image_path)
 
         if plot_pointwise_maps:
             print(f"Plotting pointwise percentile maps at λ = {lambda_qut_val:.4f}")
