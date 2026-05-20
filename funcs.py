@@ -612,6 +612,459 @@ def plot_three_maps(logit_lo, logit_med, logit_hi, court_image_path, vlim=None):
     plt.tight_layout(); plt.show()
 
 
+def bin_and_flip(
+    df,
+    court_length=94,
+    court_width=50,
+    x_bins=20,
+    y_bins=10,
+    game_col="game_id",
+    period_col="period",
+    is_home_col="is_home",
+    x_col="x",
+    y_col="y",
+):
+    """
+    Add x_bin/y_bin and normalize orientation so offensive movement is left-to-right.
+
+    The orientation rule matches the multi-game notebook:
+      1. Rotate possessions based on home/away and half.
+      2. Rotate any game whose post-rule x-bin mass is still left-heavy.
+    """
+    out = df.copy()
+    mid = (x_bins - 1) / 2
+
+    out["x_bin"] = np.clip((out[x_col] / court_length * x_bins).astype(int), 0, x_bins - 1)
+    out["y_bin"] = np.clip((out[y_col] / court_width * y_bins).astype(int), 0, y_bins - 1)
+
+    def rotate_180(mask):
+        out.loc[mask, "x_bin"] = (x_bins - 1) - out.loc[mask, "x_bin"]
+        out.loc[mask, "y_bin"] = (y_bins - 1) - out.loc[mask, "y_bin"]
+
+    halftime_flip = (
+        ((out[is_home_col] == 1) & (out[period_col] >= 3)) |
+        ((out[is_home_col] == 0) & (out[period_col] <= 2))
+    )
+    rotate_180(halftime_flip)
+
+    game_mean = out.groupby(game_col)["x_bin"].mean()
+    games_still_wrong = game_mean[game_mean < mid].index
+    rotate_180(out[game_col].isin(games_still_wrong))
+
+    return out
+
+
+def orient_movement_left_to_right(
+    df,
+    court_length=94,
+    court_width=50,
+    x_bins=20,
+    game_col="game_id",
+    period_col="period",
+    is_home_col="is_home",
+    x_col="x",
+    y_col="y",
+    x_out_col="x_oriented",
+    y_out_col="y_oriented",
+):
+    """
+    Add oriented x/y columns using the same home/away and per-game rules as bin_and_flip.
+    """
+    out = df.copy()
+    mid = (x_bins - 1) / 2
+
+    out[x_out_col] = out[x_col]
+    out[y_out_col] = out[y_col]
+    out["_orientation_x_bin"] = np.clip((out[x_col] / court_length * x_bins).astype(int), 0, x_bins - 1)
+
+    def rotate_180(mask):
+        out.loc[mask, x_out_col] = court_length - out.loc[mask, x_out_col]
+        out.loc[mask, y_out_col] = court_width - out.loc[mask, y_out_col]
+        out.loc[mask, "_orientation_x_bin"] = (x_bins - 1) - out.loc[mask, "_orientation_x_bin"]
+
+    halftime_flip = (
+        ((out[is_home_col] == 1) & (out[period_col] >= 3)) |
+        ((out[is_home_col] == 0) & (out[period_col] <= 2))
+    )
+    rotate_180(halftime_flip)
+
+    game_mean = out.groupby(game_col)["_orientation_x_bin"].mean()
+    games_still_wrong = game_mean[game_mean < mid].index
+    rotate_180(out[game_col].isin(games_still_wrong))
+
+    return out.drop(columns="_orientation_x_bin")
+
+
+def plot_heatmap_bins(
+    df_binned,
+    img_path,
+    ax,
+    title="Ball Movement Heatmap",
+    x_bins=20,
+    y_bins=10,
+    cmap="hot",
+    alpha=0.6,
+    vmin=0,
+    vmax=1,
+):
+    """
+    Plot normalized movement density from precomputed x_bin/y_bin columns.
+    """
+    court_img = mpimg.imread(img_path)
+    heatmap = np.zeros((x_bins, y_bins))
+
+    valid = df_binned.dropna(subset=["x_bin", "y_bin"])
+    if not valid.empty:
+        x_idx = valid["x_bin"].astype(int).clip(0, x_bins - 1)
+        y_idx = valid["y_bin"].astype(int).clip(0, y_bins - 1)
+        np.add.at(heatmap, (x_idx, y_idx), 1)
+
+    heatmap_norm = heatmap / heatmap.max() if heatmap.max() > 0 else heatmap
+
+    ax.imshow(court_img, extent=[0, x_bins, 0, y_bins], aspect="auto")
+    im = ax.imshow(
+        heatmap_norm.T,
+        cmap=cmap,
+        origin="lower",
+        extent=[0, x_bins, 0, y_bins],
+        alpha=alpha,
+        vmin=vmin,
+        vmax=vmax,
+    )
+    ax.set_title(title)
+    ax.set_xlabel("Court Length Bins")
+    ax.set_ylabel("Court Width Bins")
+    return im
+
+
+def plot_scoring_movement_heatmaps(
+    df,
+    img_path="court.jpg",
+    scored_col="scored",
+    x_bins=20,
+    y_bins=10,
+    title="Ball Movement Heatmaps by Play Outcome",
+    figsize=(16, 6),
+):
+    """
+    Plot side-by-side normalized movement heatmaps for non-scoring and scoring plays.
+    """
+    binned = df if {"x_bin", "y_bin"}.issubset(df.columns) else bin_and_flip(
+        df,
+        x_bins=x_bins,
+        y_bins=y_bins,
+    )
+
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
+    heatmap_images = []
+    plot_specs = [
+        (0, "Non-Scoring Plays"),
+        (1, "Scoring Plays"),
+    ]
+
+    for ax, (scored_value, label) in zip(axes, plot_specs):
+        subset = binned[binned[scored_col] == scored_value]
+        n_plays = subset["possession_number"].nunique() if "possession_number" in subset else len(subset)
+        im = plot_heatmap_bins(
+            subset,
+            img_path,
+            ax,
+            title=f"{label} (plays={n_plays})",
+            x_bins=x_bins,
+            y_bins=y_bins,
+            vmin=0,
+            vmax=1,
+        )
+        heatmap_images.append(im)
+
+    fig.suptitle(title, fontsize=16)
+    plt.tight_layout(rect=[0, 0.02, 0.92, 0.94])
+    cbar_ax = fig.add_axes([0.94, 0.16, 0.015, 0.68])
+    fig.colorbar(heatmap_images[0], cax=cbar_ax, label="Normalized Ball Movement Density")
+    plt.show()
+    return fig, axes
+
+
+def plot_scoring_movement_heatmaps_by_game(
+    df,
+    img_path="court.jpg",
+    game_col="game_id",
+    scored_col="scored",
+    x_bins=20,
+    y_bins=10,
+    title="Ball Movement Heatmaps by Game and Play Outcome",
+    row_height=3.4,
+    figsize=None,
+):
+    """
+    Plot normalized movement heatmaps for non-scoring and scoring plays within each game.
+    """
+    binned = df if {"x_bin", "y_bin"}.issubset(df.columns) else bin_and_flip(
+        df,
+        x_bins=x_bins,
+        y_bins=y_bins,
+        game_col=game_col,
+    )
+
+    games = sorted(binned[game_col].dropna().unique())
+    if not games:
+        raise ValueError(f"No games found in column '{game_col}'.")
+
+    if figsize is None:
+        figsize = (16, max(4, row_height * len(games)))
+
+    fig, axes = plt.subplots(len(games), 2, figsize=figsize, squeeze=False)
+    heatmap_images = []
+    plot_specs = [
+        (0, "Non-Scoring"),
+        (1, "Scoring"),
+    ]
+
+    for row, game in enumerate(games):
+        game_df = binned[binned[game_col] == game]
+        for col, (scored_value, label) in enumerate(plot_specs):
+            ax = axes[row, col]
+            subset = game_df[game_df[scored_col] == scored_value]
+            n_plays = subset["possession_number"].nunique() if "possession_number" in subset else len(subset)
+            im = plot_heatmap_bins(
+                subset,
+                img_path,
+                ax,
+                title=f"{game} | {label} (plays={n_plays})",
+                x_bins=x_bins,
+                y_bins=y_bins,
+                vmin=0,
+                vmax=1,
+            )
+            heatmap_images.append(im)
+
+    fig.suptitle(title, fontsize=16)
+    plt.tight_layout(rect=[0, 0.02, 0.92, 0.97])
+    cbar_ax = fig.add_axes([0.94, 0.12, 0.015, 0.76])
+    fig.colorbar(heatmap_images[0], cax=cbar_ax, label="Normalized Ball Movement Density")
+    plt.show()
+    return fig, axes
+
+
+def plot_raw_movements_by_game(
+    df,
+    img_path="court.jpg",
+    game_col="game_id",
+    possession_col="possession_number",
+    scored_col="scored",
+    time_col="time",
+    x_col="x",
+    y_col="y",
+    period_col="period",
+    is_home_col="is_home",
+    normalize_orientation=True,
+    court_length=94,
+    court_width=50,
+    title="Raw Ball Movement by Game and Play Outcome",
+    row_height=3.4,
+    figsize=None,
+    line_alpha=0.55,
+    line_width=1.2,
+    marker_size=18,
+):
+    """
+    Plot raw possession paths for non-scoring and scoring plays within each game.
+    """
+    plot_df = orient_movement_left_to_right(
+        df,
+        court_length=court_length,
+        court_width=court_width,
+        game_col=game_col,
+        period_col=period_col,
+        is_home_col=is_home_col,
+        x_col=x_col,
+        y_col=y_col,
+    ) if normalize_orientation else df.copy()
+
+    plot_x = "x_oriented" if normalize_orientation else x_col
+    plot_y = "y_oriented" if normalize_orientation else y_col
+
+    games = sorted(plot_df[game_col].dropna().unique())
+    if not games:
+        raise ValueError(f"No games found in column '{game_col}'.")
+
+    if figsize is None:
+        figsize = (18, max(4, row_height * len(games)))
+
+    court_img = mpimg.imread(img_path)
+    fig, axes = plt.subplots(len(games), 2, figsize=figsize, squeeze=False)
+    plot_specs = [
+        (0, "Non-Scoring"),
+        (1, "Scoring"),
+    ]
+
+    for row, game in enumerate(games):
+        game_df = plot_df[plot_df[game_col] == game]
+        for col, (scored_value, label) in enumerate(plot_specs):
+            ax = axes[row, col]
+            subset = game_df[game_df[scored_col] == scored_value]
+            possession_ids = subset[possession_col].dropna().unique()
+            cmap = plt.get_cmap("tab20", max(len(possession_ids), 1))
+
+            ax.imshow(court_img, extent=[0, court_length, 0, court_width], zorder=0)
+            ax.set_xlim(0, court_length)
+            ax.set_ylim(0, court_width)
+            ax.set_title(f"{game} | {label} (plays={len(possession_ids)})")
+            ax.set_xlabel("Court X")
+            ax.set_ylabel("Court Y")
+
+            for i, possession_id in enumerate(possession_ids):
+                group = subset[subset[possession_col] == possession_id]
+                if time_col in group:
+                    group = group.sort_values(by=time_col, ascending=False)
+                if group.empty:
+                    continue
+
+                color = cmap(i)
+                ax.plot(
+                    group[plot_x],
+                    group[plot_y],
+                    color=color,
+                    linewidth=line_width,
+                    alpha=line_alpha,
+                    zorder=1,
+                )
+                ax.scatter(
+                    group.iloc[0][plot_x],
+                    group.iloc[0][plot_y],
+                    marker="s",
+                    color="blue",
+                    s=marker_size,
+                    zorder=2,
+                )
+                ax.scatter(
+                    group.iloc[-1][plot_x],
+                    group.iloc[-1][plot_y],
+                    marker="X",
+                    color="red",
+                    s=marker_size,
+                    zorder=2,
+                )
+
+    fig.suptitle(title, fontsize=16)
+    plt.tight_layout(rect=[0, 0.02, 1, 0.97])
+    plt.show()
+    return fig, axes
+
+
+def plot_raw_movements_by_game_period(
+    df,
+    img_path="court.jpg",
+    game_col="game_id",
+    period_col="period",
+    possession_col="possession_number",
+    scored_col="scored",
+    time_col="time",
+    x_col="x",
+    y_col="y",
+    is_home_col="is_home",
+    normalize_orientation=True,
+    court_length=94,
+    court_width=50,
+    title="Raw Ball Movement by Game, Period, and Play Outcome",
+    row_height=3.0,
+    figsize=None,
+    line_alpha=0.55,
+    line_width=1.2,
+    marker_size=18,
+):
+    """
+    Plot raw possession paths by game and period, split into non-scoring and scoring plays.
+    """
+    plot_df = orient_movement_left_to_right(
+        df,
+        court_length=court_length,
+        court_width=court_width,
+        game_col=game_col,
+        period_col=period_col,
+        is_home_col=is_home_col,
+        x_col=x_col,
+        y_col=y_col,
+    ) if normalize_orientation else df.copy()
+
+    plot_x = "x_oriented" if normalize_orientation else x_col
+    plot_y = "y_oriented" if normalize_orientation else y_col
+
+    game_periods = (
+        plot_df[[game_col, period_col]]
+        .dropna()
+        .drop_duplicates()
+        .sort_values([game_col, period_col])
+        .itertuples(index=False, name=None)
+    )
+    game_periods = list(game_periods)
+    if not game_periods:
+        raise ValueError(f"No game/period combinations found in '{game_col}' and '{period_col}'.")
+
+    if figsize is None:
+        figsize = (18, max(4, row_height * len(game_periods)))
+
+    court_img = mpimg.imread(img_path)
+    fig, axes = plt.subplots(len(game_periods), 2, figsize=figsize, squeeze=False)
+    plot_specs = [
+        (0, "Non-Scoring"),
+        (1, "Scoring"),
+    ]
+
+    for row, (game, period) in enumerate(game_periods):
+        period_df = plot_df[(plot_df[game_col] == game) & (plot_df[period_col] == period)]
+        for col, (scored_value, label) in enumerate(plot_specs):
+            ax = axes[row, col]
+            subset = period_df[period_df[scored_col] == scored_value]
+            possession_ids = subset[possession_col].dropna().unique()
+            cmap = plt.get_cmap("tab20", max(len(possession_ids), 1))
+
+            ax.imshow(court_img, extent=[0, court_length, 0, court_width], zorder=0)
+            ax.set_xlim(0, court_length)
+            ax.set_ylim(0, court_width)
+            ax.set_title(f"{game} | Period {period} | {label} (plays={len(possession_ids)})")
+            ax.set_xlabel("Court X")
+            ax.set_ylabel("Court Y")
+
+            for i, possession_id in enumerate(possession_ids):
+                group = subset[subset[possession_col] == possession_id]
+                if time_col in group:
+                    group = group.sort_values(by=time_col, ascending=False)
+                if group.empty:
+                    continue
+
+                color = cmap(i)
+                ax.plot(
+                    group[plot_x],
+                    group[plot_y],
+                    color=color,
+                    linewidth=line_width,
+                    alpha=line_alpha,
+                    zorder=1,
+                )
+                ax.scatter(
+                    group.iloc[0][plot_x],
+                    group.iloc[0][plot_y],
+                    marker="s",
+                    color="blue",
+                    s=marker_size,
+                    zorder=2,
+                )
+                ax.scatter(
+                    group.iloc[-1][plot_x],
+                    group.iloc[-1][plot_y],
+                    marker="X",
+                    color="red",
+                    s=marker_size,
+                    zorder=2,
+                )
+
+    fig.suptitle(title, fontsize=16)
+    plt.tight_layout(rect=[0, 0.02, 1, 0.97])
+    plt.show()
+    return fig, axes
+
+
 # ============================================================
 # 8) End-to-end per-period analysis pipeline
 # ============================================================

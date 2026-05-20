@@ -7,4 +7,5 @@ analysis_ready.csv
 ball_pos_df.pkl
 analysis_ready.csv
 bootstrapped_analysis_ready.csv
-__pycache__
+__pycache__/
+*.py[cod]
