@@ -623,6 +623,7 @@ def bin_and_flip(
     is_home_col="is_home",
     x_col="x",
     y_col="y",
+    flip = "no"
 ):
     """
     Add x_bin/y_bin and normalize orientation so offensive movement is left-to-right.
@@ -637,19 +638,21 @@ def bin_and_flip(
     out["x_bin"] = np.clip((out[x_col] / court_length * x_bins).astype(int), 0, x_bins - 1)
     out["y_bin"] = np.clip((out[y_col] / court_width * y_bins).astype(int), 0, y_bins - 1)
 
-    def rotate_180(mask):
-        out.loc[mask, "x_bin"] = (x_bins - 1) - out.loc[mask, "x_bin"]
-        out.loc[mask, "y_bin"] = (y_bins - 1) - out.loc[mask, "y_bin"]
+    if flip.lower() == "no":
 
-    halftime_flip = (
-        ((out[is_home_col] == 1) & (out[period_col] >= 3)) |
-        ((out[is_home_col] == 0) & (out[period_col] <= 2))
-    )
-    rotate_180(halftime_flip)
+        def rotate_180(mask):
+            out.loc[mask, "x_bin"] = (x_bins - 1) - out.loc[mask, "x_bin"]
+            out.loc[mask, "y_bin"] = (y_bins - 1) - out.loc[mask, "y_bin"]
 
-    game_mean = out.groupby(game_col)["x_bin"].mean()
-    games_still_wrong = game_mean[game_mean < mid].index
-    rotate_180(out[game_col].isin(games_still_wrong))
+        halftime_flip = (
+            ((out[is_home_col] == 1) & (out[period_col] >= 3)) |
+            ((out[is_home_col] == 0) & (out[period_col] <= 2))
+        )
+        rotate_180(halftime_flip)
+
+        game_mean = out.groupby(game_col)["x_bin"].mean()
+        games_still_wrong = game_mean[game_mean < mid].index
+        rotate_180(out[game_col].isin(games_still_wrong))
 
     return out
 
