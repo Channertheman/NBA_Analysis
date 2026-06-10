@@ -13,6 +13,7 @@ from sklearn.metrics import roc_auc_score, RocCurveDisplay
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GroupKFold
 import tqdm
+from tqdm import trange
 
 # ============================================================
 # 1) Core λ-max / QUT machinery (infinity-norm program + null sims)
@@ -1071,6 +1072,140 @@ def plot_raw_movements_by_game_period(
 # ============================================================
 # 8) End-to-end per-period analysis pipeline
 # ============================================================
+
+def analyze_tv_logistic_single_game(
+    df_game,
+    game_id=None,
+    game_col="game_id",
+    n_bootstraps=250,
+    n_possessions=1000,
+    samples_per_possession=100,
+    min_samples_required=100,
+    grid_width=20,
+    grid_height=10,
+    mc_null=250,
+    alpha=0.05,
+    court_image_path="court.jpg",
+    show_progress=True,
+    plot_beta_summary=False,
+    plot_pointwise_maps=False,
+    plot_lambda_distributions=True,
+    seed=42
+):
+    """
+    Run the bootstrap/QUT workflow for one game.
+
+    The ordering intentionally matches the bootstrap-first workflow:
+      1. Build possession-level bootstrap datasets from the selected game.
+      2. Compute QUT and the displayed lambda_max on boot_datasets[0].
+      3. Compute the remaining bootstrap lambda_max values on boot_datasets[1:].
+      4. Summarize the null and bootstrap lambda_max distributions.
+
+    Parameters:
+    - df_game: binned/oriented tracking DataFrame with x_bin, y_bin, possession_number, scored.
+    - game_id: optional value used to filter df_game[game_col] before analysis.
+    - plot_beta_summary / plot_pointwise_maps: enable the heavier beta-map portion.
+
+    Returns:
+    - dict containing lambda statistics, raw distributions, bootstraps, and optional pointwise maps.
+    """
+    if game_id is not None:
+        if game_col not in df_game.columns:
+            raise ValueError(f"game_id was provided, but column '{game_col}' is not in df_game.")
+        df_analysis = df_game[df_game[game_col] == game_id].copy()
+    else:
+        df_analysis = df_game.copy()
+
+    if df_analysis.empty:
+        label = f" for game {game_id}" if game_id is not None else ""
+        raise ValueError(f"No rows available{label}.")
+
+    required_cols = {"possession_number", "x_bin", "y_bin", "scored"}
+    missing_cols = required_cols - set(df_analysis.columns)
+    if missing_cols:
+        raise ValueError(f"df_game is missing required columns: {sorted(missing_cols)}")
+
+    label = f" game {game_id}" if game_id is not None else ""
+    print(f"\n=== Processing single{label} ===")
+
+    boot_datasets = generate_bootstrapped_datasets(
+        df_analysis,
+        n_bootstraps=n_bootstraps,
+        n_possessions_per_bootstrap=n_possessions,
+        samples_per_possession=samples_per_possession,
+        min_samples_required=min_samples_required,
+        seed=seed
+    )
+
+    df_boot = boot_datasets[0]
+    X, y, D_TV = grid(df_boot)
+    lambda_qut_val, lambda_max_obs, lambdas_null = lambda_qut(X, y, D_TV, MC=mc_null)
+
+    lambda_max_bootstrap_rest = compute_lambda_max_from_bootstraps(
+        boot_datasets[1:],
+        D_TV,
+        solve_lambda_func=solve_infinity_norm,
+        project_grad_h=True
+    )
+    lambda_max_bootstrap = np.concatenate([
+        np.asarray([lambda_max_obs], dtype=float),
+        np.asarray(lambda_max_bootstrap_rest, dtype=float)
+    ])
+
+    stats = summarize_lambda_max_analysis(
+        lambda_max_obs=float(lambda_max_obs),
+        lambda_max_null=np.asarray(lambdas_null, dtype=float),
+        lambda_max_bootstrap=np.asarray(lambda_max_bootstrap, dtype=float),
+        plot=plot_lambda_distributions
+    )
+
+    result = {
+        "game_id": game_id,
+        "boot_datasets": boot_datasets,
+        "lambda_qut": float(lambda_qut_val),
+        "lambda_max_obs": float(stats["lambda_max_obs"]),
+        "lambda_max_ci": stats["ci"],
+        "p_value": stats["p_value"],
+        "lambda_null": np.asarray(lambdas_null, dtype=float),
+        "lambda_max_bootstrap": np.asarray(lambda_max_bootstrap, dtype=float),
+        "summary": stats,
+    }
+
+    if plot_beta_summary or plot_pointwise_maps:
+        logit_med, logit_lo, logit_hi, maps_all = bootstrap_percentile_maps_fixed_lambda(
+            boot_datasets=boot_datasets,
+            lambda_tv=lambda_qut_val,
+            grid_width=grid_width,
+            grid_height=grid_height,
+            court_image_path=court_image_path,
+            alpha=alpha,
+            show_progress=show_progress
+        )
+
+        beta_mean, beta_std = compute_beta_summary_stats(maps_all)
+        if plot_beta_summary:
+            plot_beta_mean_std(beta_mean, beta_std, court_image_path=court_image_path)
+
+        if plot_pointwise_maps:
+            print(f"Plotting pointwise percentile maps at lambda = {lambda_qut_val:.4f}")
+            plot_three_maps(logit_lo, logit_med, logit_hi, court_image_path=court_image_path)
+
+        result.update({
+            "beta_samples": maps_all,
+            "beta_mean": beta_mean,
+            "beta_std": beta_std,
+            "pointwise": {
+                "lambda": float(lambda_qut_val),
+                "alpha": float(alpha),
+                "logit_lo": logit_lo,
+                "logit_med": logit_med,
+                "logit_hi": logit_hi,
+                "maps": maps_all,
+            }
+        })
+
+    return result
+
 
 def analyze_tv_logistic_per_period(
     df_original,
