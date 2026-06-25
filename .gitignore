@@ -1,4 +1,6 @@
 *.json
+.codex
+.agents
 .ipynb_checkpoints
 court_reflect.jpg
 final.csv
