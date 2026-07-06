@@ -19,7 +19,79 @@ from tqdm import trange
 # 1) Core λ-max / QUT machinery (infinity-norm program + null sims)
 # ============================================================
 
-def solve_infinity_norm(y, X, D, project_grad_h=False):
+def _format_grid_variable_name(index, grid_height=10):
+    return f"x_bin={index // grid_height}, y_bin={index % grid_height}"
+
+
+def diagnose_infinity_norm_feasibility(
+    y,
+    X,
+    D,
+    variable_names=None,
+    top_n=15,
+    grid_height=10,
+):
+    """
+    Diagnose whether grad_h lies in the column space of D.T.
+
+    Without projecting grad_h, the constraint D.T @ w == grad_h is feasible
+    only when grad_h is exactly representable by D.T. The residuals below show
+    which variables are farthest from the nearest feasible gradient.
+    """
+    X0 = X @ np.ones((X.shape[1], 1))
+    clf = LogisticRegression(fit_intercept=False, solver='lbfgs')
+    clf.fit(X0, y)
+    beta0 = clf.coef_.flatten()
+
+    u0 = beta0[0] * np.ones(X.shape[1])
+    p = 1 / (1 + np.exp(-X @ u0))
+    p = np.clip(p, 1e-6, 1 - 1e-6)
+    grad_h = np.asarray(X.T @ (y - p)).reshape(-1)
+
+    A = np.asarray(D.T, dtype=float)
+    nearest_w, *_ = np.linalg.lstsq(A, grad_h, rcond=None)
+    nearest_grad_h = A @ nearest_w
+    residual = grad_h - nearest_grad_h
+    abs_residual = np.abs(residual)
+    order = np.argsort(abs_residual)[::-1][:top_n]
+
+    if variable_names is None:
+        variable_names = [
+            _format_grid_variable_name(i, grid_height=grid_height)
+            for i in range(X.shape[1])
+        ]
+
+    top_variables = pd.DataFrame({
+        "variable_index": order,
+        "variable": [variable_names[i] for i in order],
+        "grad_h": grad_h[order],
+        "nearest_feasible_grad_h": nearest_grad_h[order],
+        "residual": residual[order],
+        "abs_residual": abs_residual[order],
+    })
+
+    return {
+        "top_variables": top_variables,
+        "grad_h": grad_h,
+        "nearest_feasible_grad_h": nearest_grad_h,
+        "residual": residual,
+        "residual_l2": float(np.linalg.norm(residual)),
+        "residual_linf": float(np.max(abs_residual)),
+        "rank_D_transpose": int(np.linalg.matrix_rank(A)),
+        "n_variables": int(A.shape[0]),
+        "n_constraints": int(A.shape[1]),
+    }
+
+
+def solve_infinity_norm(
+    y,
+    X,
+    D,
+    project_grad_h=False,
+    debug_infeasible=False,
+    variable_names=None,
+    infeasible_top_n=15,
+):
     m = D.shape[0]
 
     # Step 1: Fit logistic regression with constant input
@@ -64,12 +136,43 @@ def solve_infinity_norm(y, X, D, project_grad_h=False):
 
     # Step 5: Check solver status
     if prob.status != "optimal":
+        if debug_infeasible:
+            diagnostics = diagnose_infinity_norm_feasibility(
+                y,
+                X,
+                D,
+                variable_names=variable_names,
+                top_n=infeasible_top_n,
+            )
+            print("Optimization infeasibility diagnostics")
+            print(f"Status: {prob.status}")
+            print(
+                "grad_h distance from col(D.T): "
+                f"L2={diagnostics['residual_l2']:.6g}, "
+                f"Linf={diagnostics['residual_linf']:.6g}"
+            )
+            print(
+                "rank(D.T)="
+                f"{diagnostics['rank_D_transpose']} / "
+                f"{diagnostics['n_variables']} variables"
+            )
+            print(diagnostics["top_variables"].to_string(index=False))
         raise ValueError(f"Optimization failed. Status: {prob.status}")
 
     return w.value, prob.value
 
 
-def lambda_qut(X, y, D_TV, MC=1000):
+def lambda_qut(
+    X,
+    y,
+    D_TV,
+    MC=1000,
+    project_grad_h=True,
+    debug_infeasible=False,
+    variable_names=None,
+    infeasible_top_n=15,
+    stop_on_infeasible=False,
+):
     X0 = X @ np.ones((X.shape[1], 1))
     clf = LogisticRegression(fit_intercept=False, solver='lbfgs')
     clf.fit(X0, y)
@@ -80,6 +183,7 @@ def lambda_qut(X, y, D_TV, MC=1000):
 
     Lambdas = []
     attempts = 0
+    null_debug_used = False
 
     print("Simulating null responses...")
     while len(Lambdas) < MC and attempts < MC * 20:
@@ -91,7 +195,15 @@ def lambda_qut(X, y, D_TV, MC=1000):
             continue
 
         try:
-            _, lambda_val = solve_infinity_norm(y_sim, X, D_TV, project_grad_h=True)
+            _, lambda_val = solve_infinity_norm(
+                y_sim,
+                X,
+                D_TV,
+                project_grad_h=project_grad_h,
+                debug_infeasible=debug_infeasible and not null_debug_used,
+                variable_names=variable_names,
+                infeasible_top_n=infeasible_top_n,
+            )
             if np.isfinite(lambda_val):
                 Lambdas.append(lambda_val)
                 if len(Lambdas) % 100 == 0:
@@ -99,6 +211,13 @@ def lambda_qut(X, y, D_TV, MC=1000):
             else:
                 print("Skipping non-finite lambda")
         except Exception as e:
+            if debug_infeasible and not null_debug_used:
+                null_debug_used = True
+            if stop_on_infeasible:
+                raise RuntimeError(
+                    "QUT null simulation failed while solving the projection-off "
+                    "infinity-norm problem. See infeasibility diagnostics above."
+                ) from e
             print(f"Skipping simulation due to error: {e}")
 
     if len(Lambdas) == 0:
@@ -107,7 +226,15 @@ def lambda_qut(X, y, D_TV, MC=1000):
     lambda_qut_val = np.quantile(Lambdas, 0.95)
 
     try:
-        _, lambda_max = solve_infinity_norm(y, X, D_TV, project_grad_h=True)
+        _, lambda_max = solve_infinity_norm(
+            y,
+            X,
+            D_TV,
+            project_grad_h=project_grad_h,
+            debug_infeasible=debug_infeasible,
+            variable_names=variable_names,
+            infeasible_top_n=infeasible_top_n,
+        )
     except Exception as e:
         raise RuntimeError(f"Optimization on real data failed: {e}")
 
