@@ -473,6 +473,382 @@ def generate_bootstrapped_datasets(
     return bootstrapped_datasets
 
 
+def _fit_unpenalized_qut_null(
+    X,
+    y,
+    solver="lbfgs",
+    tol=1e-12,
+    max_iter=1000,
+    probability_clip=1e-6,
+):
+    """Fit the common-coefficient logistic null used by the QUT gradient."""
+    y_array = np.asarray(y).reshape(-1)
+    X0 = np.asarray(X @ np.ones((X.shape[1], 1), dtype=float), dtype=float)
+
+    if X0.shape[0] != y_array.size:
+        raise ValueError("X and y have incompatible row counts.")
+    if not np.isfinite(X0).all() or not np.isfinite(y_array).all():
+        raise ValueError("The QUT null fit received non-finite data.")
+    if np.unique(y_array).size < 2:
+        raise ValueError("The QUT null fit requires both outcome classes.")
+
+    model = LogisticRegression(
+        fit_intercept=False,
+        solver=solver,
+        penalty=None,
+        tol=tol,
+        max_iter=max_iter,
+    )
+    model.fit(X0, y_array)
+    beta0 = float(model.coef_.reshape(-1)[0])
+    linear_predictor = np.asarray(X @ np.full(X.shape[1], beta0)).reshape(-1)
+    probabilities = 1.0 / (1.0 + np.exp(-linear_predictor))
+    probabilities = np.clip(
+        probabilities,
+        probability_clip,
+        1.0 - probability_clip,
+    )
+    likelihood_score = float(X0.reshape(-1) @ (y_array - probabilities))
+    return probabilities, beta0, likelihood_score
+
+
+def analyze_bootstrap_qut_feasibility(
+    boot_datasets,
+    D_TV,
+    keep_mask=None,
+    variable_indices=None,
+    current_slack_tol=1e-7,
+    grid_builder=None,
+    grid_height=10,
+    coverage_quantiles=(0.50, 0.90, 0.95, 0.99, 1.00),
+    null_solver="lbfgs",
+    null_tol=1e-12,
+    null_max_iter=1000,
+    probability_clip=1e-6,
+):
+    """
+    Measure projection-off QUT feasibility over bootstrap datasets.
+
+    For each bootstrap this function fits the unpenalized common-coefficient
+    logistic null, computes ``g = X.T @ (y - p0)``, and measures the residual
+    between ``g`` and its nearest representable value in ``col(D_TV.T)``.
+
+    For a TV incidence matrix, the maximum absolute projection residual is the
+    minimum component-wise uniform slack required to satisfy
+    ``D_TV.T @ w + slack == g``. Thus ``minimum_slack_linf`` is the decisive
+    statistic for comparing a bootstrap with ``current_slack_tol``.
+
+    Parameters
+    ----------
+    boot_datasets : sequence of pandas.DataFrame
+        Possession-bootstrap datasets accepted by ``grid_builder``.
+    D_TV : array-like, shape (n_edges, n_retained_sectors)
+        Full or reduced TV incidence matrix used by the QUT optimization.
+    keep_mask : array-like of bool, optional
+        Mask selecting retained columns from each full bootstrap design matrix.
+        If omitted, every design-matrix column is retained.
+    variable_indices : array-like of int, optional
+        Original full-grid indices for the retained sectors. Inferred from
+        ``keep_mask`` when possible.
+    current_slack_tol : float, default 1e-7
+        Slack bound whose empirical bootstrap coverage should be reported.
+    grid_builder : callable, optional
+        Callable returning ``(X, y, D)`` from a bootstrap dataframe. Defaults
+        to this module's ``grid`` function.
+
+    Returns
+    -------
+    dict
+        Detailed sector/bootstrap residuals, per-bootstrap and per-sector
+        summaries, pooled distribution statistics, slack guidance, failures,
+        and current-slack bootstrap coverage.
+    """
+    if grid_builder is None:
+        grid_builder = grid
+    if current_slack_tol is None or current_slack_tol < 0:
+        raise ValueError("current_slack_tol must be a non-negative number.")
+
+    D_reduced = np.asarray(D_TV, dtype=float)
+    if D_reduced.ndim != 2:
+        raise ValueError("D_TV must be a two-dimensional matrix.")
+
+    # The closed-form minimum-slack interpretation relies on the rows being TV
+    # incidence edges: two nonzero entries with a zero row sum.
+    if D_reduced.shape[0]:
+        nonzero_per_row = np.count_nonzero(D_reduced, axis=1)
+        is_tv_incidence = bool(
+            np.all(nonzero_per_row == 2)
+            and np.allclose(D_reduced.sum(axis=1), 0.0)
+        )
+        if not is_tv_incidence:
+            raise ValueError(
+                "D_TV must be a TV incidence matrix with two opposite entries per edge."
+            )
+
+    keep_mask_array = None if keep_mask is None else np.asarray(keep_mask, dtype=bool)
+    if keep_mask_array is not None:
+        inferred_indices = np.flatnonzero(keep_mask_array)
+        if inferred_indices.size != D_reduced.shape[1]:
+            raise ValueError(
+                "The retained-sector mask and D_TV have incompatible dimensions."
+            )
+    else:
+        inferred_indices = np.arange(D_reduced.shape[1], dtype=int)
+
+    if variable_indices is None:
+        variable_indices_array = inferred_indices
+    else:
+        variable_indices_array = np.asarray(variable_indices, dtype=int)
+        if variable_indices_array.size != D_reduced.shape[1]:
+            raise ValueError(
+                "variable_indices must contain one index per D_TV column."
+            )
+
+    D_transpose = D_reduced.T
+    feasible_projection = D_transpose @ np.linalg.pinv(D_transpose)
+    bootstrap_rows = []
+    sector_frames = []
+
+    for bootstrap_index, df_boot in enumerate(
+        tqdm.tqdm(boot_datasets, desc="Calculating bootstrap QUT feasibility")
+    ):
+        try:
+            X_boot, y_boot, _ = grid_builder(df_boot)
+            if keep_mask_array is None:
+                X_reduced = X_boot
+            else:
+                if X_boot.shape[1] != keep_mask_array.size:
+                    raise ValueError(
+                        f"Bootstrap has {X_boot.shape[1]} sectors; "
+                        f"expected {keep_mask_array.size}."
+                    )
+                X_reduced = X_boot[:, keep_mask_array]
+
+            if X_reduced.shape[1] != D_reduced.shape[1]:
+                raise ValueError(
+                    "The retained bootstrap design and D_TV have incompatible dimensions."
+                )
+
+            probabilities, beta0, null_score = _fit_unpenalized_qut_null(
+                X_reduced,
+                y_boot,
+                solver=null_solver,
+                tol=null_tol,
+                max_iter=null_max_iter,
+                probability_clip=probability_clip,
+            )
+            grad_h = np.asarray(
+                X_reduced.T @ (np.asarray(y_boot).reshape(-1) - probabilities)
+            ).reshape(-1)
+            nearest_feasible_grad_h = feasible_projection @ grad_h
+            residual = grad_h - nearest_feasible_grad_h
+            abs_residual = np.abs(residual)
+            minimum_slack_linf = float(np.max(abs_residual))
+
+            sector_frames.append(pd.DataFrame({
+                "bootstrap_index": bootstrap_index,
+                "reduced_variable_index": np.arange(residual.size),
+                "variable_index": variable_indices_array,
+                "x_bin": variable_indices_array // grid_height,
+                "y_bin": variable_indices_array % grid_height,
+                "grad_h": grad_h,
+                "nearest_feasible_grad_h": nearest_feasible_grad_h,
+                "residual": residual,
+                "abs_residual": abs_residual,
+            }))
+            bootstrap_rows.append({
+                "bootstrap_index": bootstrap_index,
+                "n_possessions": int(X_reduced.shape[0]),
+                "scored_rate": float(np.mean(y_boot)),
+                "null_beta0": beta0,
+                "null_likelihood_score": null_score,
+                "mean_residual": float(np.mean(residual)),
+                "variance_residual": float(np.var(residual, ddof=1)),
+                "std_residual": float(np.std(residual, ddof=1)),
+                "min_residual": float(np.min(residual)),
+                "max_residual": float(np.max(residual)),
+                "range_residual": float(np.ptp(residual)),
+                "mean_abs_residual": float(np.mean(abs_residual)),
+                "median_abs_residual": float(np.median(abs_residual)),
+                "p90_abs_residual": float(np.quantile(abs_residual, 0.90)),
+                "p95_abs_residual": float(np.quantile(abs_residual, 0.95)),
+                "p99_abs_residual": float(np.quantile(abs_residual, 0.99)),
+                "max_abs_residual": minimum_slack_linf,
+                "minimum_slack_linf": minimum_slack_linf,
+                "slack_shortfall": max(minimum_slack_linf - current_slack_tol, 0.0),
+                "covered_by_current_slack": minimum_slack_linf <= current_slack_tol,
+                "rmse_residual": float(np.sqrt(np.mean(residual ** 2))),
+                "l2_residual": float(np.linalg.norm(residual)),
+                "error": None,
+            })
+        except Exception as exc:
+            bootstrap_rows.append({
+                "bootstrap_index": bootstrap_index,
+                "error": str(exc),
+            })
+
+    per_bootstrap = pd.DataFrame(bootstrap_rows)
+    if not sector_frames:
+        raise RuntimeError("QUT feasibility analysis failed for every bootstrap dataset.")
+
+    by_sector_bootstrap = pd.concat(sector_frames, ignore_index=True)
+    successful = per_bootstrap[per_bootstrap["error"].isna()].copy()
+
+    def describe_distribution(label, values):
+        values = np.asarray(values, dtype=float)
+        values = values[np.isfinite(values)]
+        return {
+            "residual_measure": label,
+            "count": int(values.size),
+            "mean": float(np.mean(values)),
+            "variance": float(np.var(values, ddof=1)),
+            "std": float(np.std(values, ddof=1)),
+            "min": float(np.min(values)),
+            "max": float(np.max(values)),
+            "range": float(np.ptp(values)),
+            "p50": float(np.quantile(values, 0.50)),
+            "p90": float(np.quantile(values, 0.90)),
+            "p95": float(np.quantile(values, 0.95)),
+            "p99": float(np.quantile(values, 0.99)),
+        }
+
+    distribution_summary = pd.DataFrame([
+        describe_distribution(
+            "signed residual (all retained sectors and bootstraps)",
+            by_sector_bootstrap["residual"],
+        ),
+        describe_distribution(
+            "absolute residual (all retained sectors and bootstraps)",
+            by_sector_bootstrap["abs_residual"],
+        ),
+        describe_distribution(
+            "minimum L_inf slack required per bootstrap",
+            successful["minimum_slack_linf"],
+        ),
+    ]).set_index("residual_measure")
+
+    sector_summary = (
+        by_sector_bootstrap
+        .groupby(["variable_index", "x_bin", "y_bin"], as_index=False)
+        .agg(
+            mean_residual=("residual", "mean"),
+            variance_residual=("residual", "var"),
+            min_residual=("residual", "min"),
+            max_residual=("residual", "max"),
+            mean_abs_residual=("abs_residual", "mean"),
+            p95_abs_residual=("abs_residual", lambda values: values.quantile(0.95)),
+            max_abs_residual=("abs_residual", "max"),
+            proportion_over_current_slack=(
+                "abs_residual",
+                lambda values: (values > current_slack_tol).mean(),
+            ),
+        )
+    )
+    sector_summary["range_residual"] = (
+        sector_summary["max_residual"] - sector_summary["min_residual"]
+    )
+    sector_summary = sector_summary.sort_values("p95_abs_residual", ascending=False)
+
+    coverage_quantiles = np.asarray(coverage_quantiles, dtype=float)
+    if (
+        coverage_quantiles.ndim != 1
+        or coverage_quantiles.size == 0
+        or np.any((coverage_quantiles < 0) | (coverage_quantiles > 1))
+    ):
+        raise ValueError("coverage_quantiles must contain probabilities between 0 and 1.")
+    slack_guidance = pd.DataFrame({
+        "bootstrap_coverage_target": coverage_quantiles,
+        "suggested_slack_tol": np.quantile(
+            successful["minimum_slack_linf"], coverage_quantiles
+        ),
+    })
+    slack_guidance["multiple_of_current_slack_tol"] = (
+        slack_guidance["suggested_slack_tol"] / current_slack_tol
+        if current_slack_tol > 0
+        else np.nan
+    )
+
+    return {
+        "residual_definition": "grad_h - projection_to_col(D_TV.T)",
+        "by_sector_bootstrap": by_sector_bootstrap,
+        "per_bootstrap": per_bootstrap,
+        "distribution_summary": distribution_summary,
+        "sector_summary": sector_summary,
+        "slack_guidance": slack_guidance,
+        "current_slack_tol": float(current_slack_tol),
+        "current_slack_bootstrap_coverage": float(
+            successful["covered_by_current_slack"].mean()
+        ),
+        "maximum_required_slack": float(successful["minimum_slack_linf"].max()),
+        "maximum_slack_multiple": (
+            float(successful["minimum_slack_linf"].max() / current_slack_tol)
+            if current_slack_tol > 0
+            else np.nan
+        ),
+        "failed_bootstraps": per_bootstrap[per_bootstrap["error"].notna()].copy(),
+    }
+
+
+def plot_bootstrap_qut_feasibility(
+    residual_results,
+    current_slack_tol=None,
+    absolute_residual_bins=50,
+    minimum_slack_bins=40,
+):
+    """Plot sector residuals and per-bootstrap minimum QUT slack requirements."""
+    if current_slack_tol is None:
+        current_slack_tol = residual_results["current_slack_tol"]
+
+    absolute_residuals = residual_results["by_sector_bootstrap"]["abs_residual"]
+    minimum_slack = (
+        residual_results["per_bootstrap"]
+        .loc[lambda frame: frame["error"].isna(), "minimum_slack_linf"]
+    )
+    p95_slack = float(minimum_slack.quantile(0.95))
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4.5), constrained_layout=True)
+    axes[0].hist(
+        absolute_residuals,
+        bins=absolute_residual_bins,
+        color="steelblue",
+        alpha=0.85,
+    )
+    axes[0].axvline(
+        current_slack_tol,
+        color="black",
+        linestyle="--",
+        label=f"current slack={current_slack_tol:.3g}",
+    )
+    axes[0].set_title("Absolute sector residuals across bootstraps")
+    axes[0].set_xlabel("abs(feasibility residual)")
+    axes[0].set_ylabel("count")
+    axes[0].legend()
+
+    axes[1].hist(
+        minimum_slack,
+        bins=minimum_slack_bins,
+        color="darkorange",
+        alpha=0.85,
+    )
+    axes[1].axvline(
+        current_slack_tol,
+        color="black",
+        linestyle="--",
+        label="current slack",
+    )
+    axes[1].axvline(
+        p95_slack,
+        color="crimson",
+        linestyle=":",
+        label=f"95% coverage={p95_slack:.3g}",
+    )
+    axes[1].set_title("Minimum uniform slack required by bootstrap")
+    axes[1].set_xlabel("minimum required L_inf slack")
+    axes[1].set_ylabel("bootstrap count")
+    axes[1].legend()
+    return fig, axes
+
+
 def bootstrap_tv_logistic(df, B=100, lambda_tv=1.0, seed=42):
     np.random.seed(seed)
     possessions = df['possession_number'].unique()
