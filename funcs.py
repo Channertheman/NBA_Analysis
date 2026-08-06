@@ -132,7 +132,7 @@ def solve_infinity_norm(
     constraints = [D.T @ w == grad_h]
     objective = cp.Minimize(cp.norm(w, "inf"))
     prob = cp.Problem(objective, constraints)
-    prob.solve(solver=cp.ECOS, verbose=False)
+    prob.solve(solver=cp.CLARABEL, verbose=False)
 
     # Step 5: Check solver status
     if prob.status != "optimal":
@@ -338,9 +338,9 @@ def tv_logistic_regression_heatmap(df, lambda_tv=1.0, grid_width=20, grid_height
 
     # Solve the optimization problem
     try:
-        result = problem.solve(solver=cp.ECOS, verbose=False)
+        result = problem.solve(solver=cp.CLARABEL, verbose=False)
     except:
-        print("ECOS failed, trying SCS...")
+        print("CLARABEL failed, trying SCS...")
         result = problem.solve(solver=cp.SCS, verbose=False)
 
     if beta_grid.value is None:
@@ -403,9 +403,9 @@ def solve_tv_logistic_regression(df, lambda_tv=1.0, grid_width=20, grid_height=1
     problem = cp.Problem(objective, constraints)
 
     try:
-        result = problem.solve(solver=cp.ECOS, verbose=False)
+        result = problem.solve(solver=cp.CLARABEL, verbose=False)
     except:
-        print("ECOS failed, trying SCS...")
+        print("CLARABEL failed, trying SCS...")
         result = problem.solve(solver=cp.SCS, verbose=False)
 
     if beta_grid.value is None:
@@ -418,59 +418,103 @@ def solve_tv_logistic_regression(df, lambda_tv=1.0, grid_width=20, grid_height=1
 # 4) Bootstrapping: dataset generation + repeated model fits
 # ============================================================
 
+def iter_bootstrapped_datasets(
+    original_df,
+    n_bootstraps=100,
+    n_possessions_per_bootstrap=1000,
+    samples_per_possession=100,
+    min_samples_required=100,
+    seed=42,
+    show_progress=True,
+):
+    """Yield possession-level bootstrap datasets one at a time.
+
+    Only the currently yielded DataFrame is retained. Row positions are sampled
+    directly so a bootstrap is assembled with one DataFrame allocation instead
+    of thousands of per-possession DataFrames.
+    """
+    if "possession_number" not in original_df.columns:
+        raise ValueError("original_df must include a possession_number column.")
+    if n_bootstraps < 1:
+        raise ValueError("n_bootstraps must be at least 1.")
+    if n_possessions_per_bootstrap < 1:
+        raise ValueError("n_possessions_per_bootstrap must be at least 1.")
+    if samples_per_possession < 1:
+        raise ValueError("samples_per_possession must be at least 1.")
+
+    rng = np.random.default_rng(seed)
+
+    eligible_indices = [
+        np.asarray(indices, dtype=np.intp)
+        for indices in original_df.groupby(
+            "possession_number", sort=False, observed=False
+        ).indices.values()
+        if len(indices) >= min_samples_required
+    ]
+    total_eligible = len(eligible_indices)
+
+    if total_eligible == 0:
+        raise ValueError("No possessions meet the minimum sample requirement.")
+
+    bootstrap_indices = range(n_bootstraps)
+    if show_progress:
+        bootstrap_indices = tqdm.tqdm(
+            bootstrap_indices,
+            total=n_bootstraps,
+            desc="Processing Bootstrap Datasets",
+        )
+
+    rows_per_bootstrap = n_possessions_per_bootstrap * samples_per_possession
+    for b in bootstrap_indices:
+        selected_groups = rng.integers(
+            total_eligible, size=n_possessions_per_bootstrap
+        )
+        sampled_positions = np.empty(rows_per_bootstrap, dtype=np.intp)
+
+        for draw_index, group_index in enumerate(selected_groups):
+            start = draw_index * samples_per_possession
+            stop = start + samples_per_possession
+            sampled_positions[start:stop] = rng.choice(
+                eligible_indices[group_index],
+                size=samples_per_possession,
+                replace=True,
+            )
+
+        df_boot = original_df.iloc[sampled_positions].copy()
+        first_possession_id = 100000 + b * n_possessions_per_bootstrap
+        df_boot["possession_number"] = np.repeat(
+            np.arange(
+                first_possession_id,
+                first_possession_id + n_possessions_per_bootstrap,
+                dtype=np.int64,
+            ),
+            samples_per_possession,
+        )
+        df_boot.reset_index(drop=True, inplace=True)
+        del sampled_positions, selected_groups
+        yield df_boot
+
+
 def generate_bootstrapped_datasets(
     original_df,
     n_bootstraps=100,
     n_possessions_per_bootstrap=1000,
     samples_per_possession=100,
     min_samples_required=100,
-    seed=42
+    seed=42,
 ):
-    """
-    Generate B bootstrapped datasets using possession-level resampling.
-
-    Parameters:
-        original_df (pd.DataFrame): Raw dataset with columns ['possession_number', 'x', 'y', 'scored', ...]
-        n_bootstraps (int): Number of bootstrapped datasets to generate
-        n_possessions_per_bootstrap (int): Number of possessions in each bootstrapped dataset
-        samples_per_possession (int): How many samples to draw per possession
-        min_samples_required (int): Minimum number of rows a possession must have to be eligible for sampling
-        seed (int): RNG seed for reproducibility
-
-    Returns:
-        List[pd.DataFrame]: List of bootstrapped DataFrames
-    """
-    rng = np.random.default_rng(seed)
-    
-    # Filter out sparse possessions
-    grouped = list(original_df.groupby("possession_number"))
-    eligible_possessions = [g for _, g in grouped if len(g) >= min_samples_required]
-    total_eligible = len(eligible_possessions)
-
-    if total_eligible == 0:
-        raise ValueError("No possessions meet the minimum sample requirement.")
-
-    bootstrapped_datasets = []
-
-    for b in tqdm.tqdm(range(n_bootstraps), desc="Generating Bootstrapped Datasets"):
-        new_rows = []
-        new_possession_ids = range(100000 + b * n_possessions_per_bootstrap,
-                                   100000 + (b + 1) * n_possessions_per_bootstrap)
-
-        for new_pid in new_possession_ids:
-            real_group = eligible_possessions[rng.integers(total_eligible)]
-            sampled_rows = real_group.sample(
-                n=samples_per_possession,
-                replace=True,
-                random_state=rng.integers(1e6)
-            ).copy()
-            sampled_rows["possession_number"] = new_pid
-            new_rows.append(sampled_rows)
-
-        df_boot = pd.concat(new_rows, ignore_index=True)
-        bootstrapped_datasets.append(df_boot)
-
-    return bootstrapped_datasets
+    """Materialize bootstrap datasets; prefer the iterator for large runs."""
+    return list(
+        iter_bootstrapped_datasets(
+            original_df,
+            n_bootstraps=n_bootstraps,
+            n_possessions_per_bootstrap=n_possessions_per_bootstrap,
+            samples_per_possession=samples_per_possession,
+            min_samples_required=min_samples_required,
+            seed=seed,
+            show_progress=True,
+        )
+    )
 
 
 def _fit_unpenalized_qut_null(
@@ -1596,64 +1640,105 @@ def analyze_tv_logistic_single_game(
     seed=42
 ):
     """
-    Run the bootstrap/QUT workflow for one game.
+    Run the memory-bounded bootstrap/QUT workflow for one game.
 
-    The ordering intentionally matches the bootstrap-first workflow:
-      1. Build possession-level bootstrap datasets from the selected game.
-      2. Compute QUT and the displayed lambda_max on boot_datasets[0].
-      3. Compute the remaining bootstrap lambda_max values on boot_datasets[1:].
-      4. Summarize the null and bootstrap lambda_max distributions.
+    Bootstrap DataFrames are generated and analyzed one at a time. The result
+    retains lambda statistics and, when requested, the small stack of 20x10
+    coefficient maps, but never retains the bootstrap tracking tables.
 
     Parameters:
     - df_game: binned/oriented tracking DataFrame with x_bin, y_bin, possession_number, scored.
     - game_id: optional value used to filter df_game[game_col] before analysis.
-    - plot_beta_summary / plot_pointwise_maps: enable the heavier beta-map portion.
+    - plot_beta_summary: retained for call compatibility but ignored; mean and
+      standard-deviation maps are no longer calculated.
+    - plot_pointwise_maps: calculate and plot percentile maps.
 
     Returns:
-    - dict containing lambda statistics, raw distributions, bootstraps, and optional pointwise maps.
+    - dict containing lambda statistics, raw distributions, and optional pointwise maps.
     """
+    required_cols = ["possession_number", "x_bin", "y_bin", "scored"]
+    missing_cols = set(required_cols) - set(df_game.columns)
+    if missing_cols:
+        raise ValueError(f"df_game is missing required columns: {sorted(missing_cols)}")
+
     if game_id is not None:
         if game_col not in df_game.columns:
             raise ValueError(f"game_id was provided, but column '{game_col}' is not in df_game.")
-        df_analysis = df_game[df_game[game_col] == game_id].copy()
+        analysis_rows = df_game[game_col] == game_id
+        df_analysis = df_game.loc[analysis_rows, required_cols].copy()
     else:
-        df_analysis = df_game.copy()
+        df_analysis = df_game.loc[:, required_cols].copy()
 
     if df_analysis.empty:
         label = f" for game {game_id}" if game_id is not None else ""
         raise ValueError(f"No rows available{label}.")
 
-    required_cols = {"possession_number", "x_bin", "y_bin", "scored"}
-    missing_cols = required_cols - set(df_analysis.columns)
-    if missing_cols:
-        raise ValueError(f"df_game is missing required columns: {sorted(missing_cols)}")
-
     label = f" game {game_id}" if game_id is not None else ""
     print(f"\n=== Processing single{label} ===")
 
-    boot_datasets = generate_bootstrapped_datasets(
+    if plot_beta_summary:
+        print("Mean and standard-deviation beta maps have been removed; ignoring plot_beta_summary.")
+
+    maps_all = (
+        np.empty((n_bootstraps, grid_width, grid_height), dtype=np.float32)
+        if plot_pointwise_maps
+        else None
+    )
+    lambda_max_bootstrap = []
+    lambda_qut_val = None
+    lambda_max_obs = None
+    lambdas_null = None
+    D_TV = None
+
+    bootstrap_stream = iter_bootstrapped_datasets(
         df_analysis,
         n_bootstraps=n_bootstraps,
         n_possessions_per_bootstrap=n_possessions,
         samples_per_possession=samples_per_possession,
         min_samples_required=min_samples_required,
-        seed=seed
+        seed=seed,
+        show_progress=show_progress,
     )
 
-    df_boot = boot_datasets[0]
-    X, y, D_TV = grid(df_boot)
-    lambda_qut_val, lambda_max_obs, lambdas_null = lambda_qut(X, y, D_TV, MC=mc_null)
+    for bootstrap_index, df_boot in enumerate(bootstrap_stream):
+        X_boot, y_boot, D_boot = grid(df_boot)
 
-    lambda_max_bootstrap_rest = compute_lambda_max_from_bootstraps(
-        boot_datasets[1:],
-        D_TV,
-        solve_lambda_func=solve_infinity_norm,
-        project_grad_h=True
-    )
-    lambda_max_bootstrap = np.concatenate([
-        np.asarray([lambda_max_obs], dtype=float),
-        np.asarray(lambda_max_bootstrap_rest, dtype=float)
-    ])
+        if bootstrap_index == 0:
+            D_TV = D_boot
+            lambda_qut_val, lambda_max_obs, lambdas_null = lambda_qut(
+                X_boot, y_boot, D_TV, MC=mc_null
+            )
+            lambda_max_bootstrap.append(float(lambda_max_obs))
+        else:
+            try:
+                _, lambda_max_b = solve_infinity_norm(
+                    y_boot,
+                    X_boot,
+                    D_TV,
+                    project_grad_h=True,
+                )
+                if np.isfinite(lambda_max_b):
+                    lambda_max_bootstrap.append(float(lambda_max_b))
+            except Exception:
+                pass
+
+        del X_boot, y_boot, D_boot
+
+        if maps_all is not None:
+            out = tv_logistic_regression_heatmap(
+                df_boot,
+                lambda_tv=lambda_qut_val,
+                grid_width=grid_width,
+                grid_height=grid_height,
+                court_image_path=court_image_path,
+                plot=False,
+            )
+            beta_logit = out[0] if isinstance(out, tuple) else out
+            maps_all[bootstrap_index] = beta_logit
+
+        del df_boot
+
+    lambda_max_bootstrap = np.asarray(lambda_max_bootstrap, dtype=float)
 
     stats = summarize_lambda_max_analysis(
         lambda_max_obs=float(lambda_max_obs),
@@ -1664,7 +1749,6 @@ def analyze_tv_logistic_single_game(
 
     result = {
         "game_id": game_id,
-        "boot_datasets": boot_datasets,
         "lambda_qut": float(lambda_qut_val),
         "lambda_max_obs": float(stats["lambda_max_obs"]),
         "lambda_max_ci": stats["ci"],
@@ -1674,29 +1758,17 @@ def analyze_tv_logistic_single_game(
         "summary": stats,
     }
 
-    if plot_beta_summary or plot_pointwise_maps:
-        logit_med, logit_lo, logit_hi, maps_all = bootstrap_percentile_maps_fixed_lambda(
-            boot_datasets=boot_datasets,
-            lambda_tv=lambda_qut_val,
-            grid_width=grid_width,
-            grid_height=grid_height,
-            court_image_path=court_image_path,
-            alpha=alpha,
-            show_progress=show_progress
-        )
+    if maps_all is not None:
+        q_lo, q_hi = alpha / 2, 1 - alpha / 2
+        logit_lo = np.quantile(maps_all, q_lo, axis=0)
+        logit_med = np.median(maps_all, axis=0)
+        logit_hi = np.quantile(maps_all, q_hi, axis=0)
 
-        beta_mean, beta_std = compute_beta_summary_stats(maps_all)
-        if plot_beta_summary:
-            plot_beta_mean_std(beta_mean, beta_std, court_image_path=court_image_path)
-
-        if plot_pointwise_maps:
-            print(f"Plotting pointwise percentile maps at lambda = {lambda_qut_val:.4f}")
-            plot_three_maps(logit_lo, logit_med, logit_hi, court_image_path=court_image_path)
+        print(f"Plotting pointwise percentile maps at lambda = {lambda_qut_val:.4f}")
+        plot_three_maps(logit_lo, logit_med, logit_hi, court_image_path=court_image_path)
 
         result.update({
             "beta_samples": maps_all,
-            "beta_mean": beta_mean,
-            "beta_std": beta_std,
             "pointwise": {
                 "lambda": float(lambda_qut_val),
                 "alpha": float(alpha),
