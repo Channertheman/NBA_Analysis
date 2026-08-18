@@ -172,6 +172,7 @@ def lambda_qut(
     variable_names=None,
     infeasible_top_n=15,
     stop_on_infeasible=False,
+    random_state=None,
 ):
     X0 = X @ np.ones((X.shape[1], 1))
     clf = LogisticRegression(fit_intercept=False, solver='lbfgs')
@@ -188,7 +189,7 @@ def lambda_qut(
     print("Simulating null responses...")
     while len(Lambdas) < MC and attempts < MC * 20:
         attempts += 1
-        y_sim = binom.rvs(1, p0)
+        y_sim = binom.rvs(1, p0, random_state=random_state)
 
         if np.all(y_sim == 0) or np.all(y_sim == 1):
             print(f"Skipping degenerate simulation (all {int(y_sim[0])})")
