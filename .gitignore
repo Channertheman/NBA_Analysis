@@ -7,7 +7,16 @@ final.csv
 movement_csv.csv
 analysis_ready.csv
 ball_pos_df.pkl
-analysis_ready.csv
 bootstrapped_analysis_ready.csv
 __pycache__/
 *.py[cod]
+
+# Generated profile-simulation artifacts; keep only compact final summaries.
+/profile_sim_results/**
+!/profile_sim_results/**/
+!/profile_sim_results/**/all_profiles_qut_summary.csv
+!/profile_sim_results/**/individual_profile_summary.csv
+!/profile_sim_results/**/representative_map_similarity.csv
+
+# Superseded reference-only output from the earlier run.
+/profile_sim_results/representative_maps/games10_trajectory142_outcome242_baseline0.00/representative_map_similarity.csv
