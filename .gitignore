@@ -10,6 +10,7 @@ ball_pos_df.pkl
 bootstrapped_analysis_ready.csv
 __pycache__/
 *.py[cod]
+/testing.ipynb
 
 # Generated profile-simulation artifacts; keep only compact final summaries.
 /profile_sim_results/**
@@ -17,6 +18,15 @@ __pycache__/
 !/profile_sim_results/**/all_profiles_qut_summary.csv
 !/profile_sim_results/**/individual_profile_summary.csv
 !/profile_sim_results/**/representative_map_similarity.csv
+!/profile_sim_results/**/performance_ranking_overall.csv
+!/profile_sim_results/**/performance_ranking_by_profile.csv
+!/profile_sim_results/**/ranking_overall.csv
+!/profile_sim_results/**/ranking_by_profile.csv
+!/profile_sim_results/**/targeted_b500_p01000_s100_summary.csv
+!/profile_sim_results/**/selected_top5_plus_b500_summary.csv
+
+# Archived generated presentations remain local, including compact summaries.
+/profile_sim_results/heatmaps/archive/**
 
 # Superseded reference-only output from the earlier run.
 /profile_sim_results/representative_maps/games10_trajectory142_outcome242_baseline0.00/representative_map_similarity.csv

@@ -1,0 +1,37 @@
+image_type,profile,metric,bootstrap_count,possessions_per_bootstrap,samples_per_possession,relative_path
+detailed-profile,high-y-side,support-aware profile recovery,50,1000,250,heatmaps/high-y-side/bootstrap-count-0050/possessions-per-bootstrap-01000__samples-per-possession-0250.png
+detailed-profile,high-y-side,support-aware profile recovery,50,2500,250,heatmaps/high-y-side/bootstrap-count-0050/possessions-per-bootstrap-02500__samples-per-possession-0250.png
+detailed-profile,high-y-side,support-aware profile recovery,100,1000,200,heatmaps/high-y-side/bootstrap-count-0100/possessions-per-bootstrap-01000__samples-per-possession-0200.png
+detailed-profile,high-y-side,support-aware profile recovery,100,1000,250,heatmaps/high-y-side/bootstrap-count-0100/possessions-per-bootstrap-01000__samples-per-possession-0250.png
+detailed-profile,high-y-side,support-aware profile recovery,100,2500,250,heatmaps/high-y-side/bootstrap-count-0100/possessions-per-bootstrap-02500__samples-per-possession-0250.png
+detailed-profile,high-y-side,support-aware profile recovery,500,1000,100,heatmaps/high-y-side/bootstrap-count-0500/possessions-per-bootstrap-01000__samples-per-possession-0100.png
+similarity-overview,high-y-side,outside-energy-fraction,,,,heatmaps/high-y-side/overview/off-profile-energy.png
+similarity-overview,high-y-side,penalized-profile-cosine,,,,heatmaps/high-y-side/overview/penalized-profile-similarity.png
+similarity-overview,high-y-side,support-cosine,,,,heatmaps/high-y-side/overview/support-region-similarity.png
+detailed-profile,low-y-side,support-aware profile recovery,50,1000,250,heatmaps/low-y-side/bootstrap-count-0050/possessions-per-bootstrap-01000__samples-per-possession-0250.png
+detailed-profile,low-y-side,support-aware profile recovery,50,2500,250,heatmaps/low-y-side/bootstrap-count-0050/possessions-per-bootstrap-02500__samples-per-possession-0250.png
+detailed-profile,low-y-side,support-aware profile recovery,100,1000,200,heatmaps/low-y-side/bootstrap-count-0100/possessions-per-bootstrap-01000__samples-per-possession-0200.png
+detailed-profile,low-y-side,support-aware profile recovery,100,1000,250,heatmaps/low-y-side/bootstrap-count-0100/possessions-per-bootstrap-01000__samples-per-possession-0250.png
+detailed-profile,low-y-side,support-aware profile recovery,100,2500,250,heatmaps/low-y-side/bootstrap-count-0100/possessions-per-bootstrap-02500__samples-per-possession-0250.png
+detailed-profile,low-y-side,support-aware profile recovery,500,1000,100,heatmaps/low-y-side/bootstrap-count-0500/possessions-per-bootstrap-01000__samples-per-possession-0100.png
+similarity-overview,low-y-side,outside-energy-fraction,,,,heatmaps/low-y-side/overview/off-profile-energy.png
+similarity-overview,low-y-side,penalized-profile-cosine,,,,heatmaps/low-y-side/overview/penalized-profile-similarity.png
+similarity-overview,low-y-side,support-cosine,,,,heatmaps/low-y-side/overview/support-region-similarity.png
+detailed-profile,perimeter,support-aware profile recovery,50,1000,250,heatmaps/perimeter/bootstrap-count-0050/possessions-per-bootstrap-01000__samples-per-possession-0250.png
+detailed-profile,perimeter,support-aware profile recovery,50,2500,250,heatmaps/perimeter/bootstrap-count-0050/possessions-per-bootstrap-02500__samples-per-possession-0250.png
+detailed-profile,perimeter,support-aware profile recovery,100,1000,200,heatmaps/perimeter/bootstrap-count-0100/possessions-per-bootstrap-01000__samples-per-possession-0200.png
+detailed-profile,perimeter,support-aware profile recovery,100,1000,250,heatmaps/perimeter/bootstrap-count-0100/possessions-per-bootstrap-01000__samples-per-possession-0250.png
+detailed-profile,perimeter,support-aware profile recovery,100,2500,250,heatmaps/perimeter/bootstrap-count-0100/possessions-per-bootstrap-02500__samples-per-possession-0250.png
+detailed-profile,perimeter,support-aware profile recovery,500,1000,100,heatmaps/perimeter/bootstrap-count-0500/possessions-per-bootstrap-01000__samples-per-possession-0100.png
+similarity-overview,perimeter,outside-energy-fraction,,,,heatmaps/perimeter/overview/off-profile-energy.png
+similarity-overview,perimeter,penalized-profile-cosine,,,,heatmaps/perimeter/overview/penalized-profile-similarity.png
+similarity-overview,perimeter,support-cosine,,,,heatmaps/perimeter/overview/support-region-similarity.png
+detailed-profile,reference,support-aware profile recovery,50,1000,250,heatmaps/reference/bootstrap-count-0050/possessions-per-bootstrap-01000__samples-per-possession-0250.png
+detailed-profile,reference,support-aware profile recovery,50,2500,250,heatmaps/reference/bootstrap-count-0050/possessions-per-bootstrap-02500__samples-per-possession-0250.png
+detailed-profile,reference,support-aware profile recovery,100,1000,200,heatmaps/reference/bootstrap-count-0100/possessions-per-bootstrap-01000__samples-per-possession-0200.png
+detailed-profile,reference,support-aware profile recovery,100,1000,250,heatmaps/reference/bootstrap-count-0100/possessions-per-bootstrap-01000__samples-per-possession-0250.png
+detailed-profile,reference,support-aware profile recovery,100,2500,250,heatmaps/reference/bootstrap-count-0100/possessions-per-bootstrap-02500__samples-per-possession-0250.png
+detailed-profile,reference,support-aware profile recovery,500,1000,100,heatmaps/reference/bootstrap-count-0500/possessions-per-bootstrap-01000__samples-per-possession-0100.png
+similarity-overview,reference,outside-energy-fraction,,,,heatmaps/reference/overview/off-profile-energy.png
+similarity-overview,reference,penalized-profile-cosine,,,,heatmaps/reference/overview/penalized-profile-similarity.png
+similarity-overview,reference,support-cosine,,,,heatmaps/reference/overview/support-region-similarity.png
