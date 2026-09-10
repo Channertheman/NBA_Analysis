@@ -185,27 +185,74 @@ evaluated as a full game and as quarters 1 through 4.
 
 The experiment uses deterministic seeds and nested bootstrap prefixes so that
 smaller bootstrap counts are directly comparable with the matching prefix of a
-larger run. Recovery is summarized with:
+larger run. Before comparison, each recovered median coefficient map is
+background-adjusted by subtracting its median value outside the planted
+support; the planted map is not centered. Recovery is then summarized with:
 
-- **support similarity:** cosine similarity inside the planted region;
-- **off-profile energy:** recovered signal outside that region; and
-- **penalized profile similarity:** support similarity reduced by off-profile
-  leakage, the primary ranking metric.
+- **whole-grid signed cosine** (`C_G`): cosine similarity across every court
+  sector. The planted map is zero outside its support, so off-profile recovered
+  structure adds no numerator credit but increases the recovered norm;
+- **outside-energy fraction** (`L`): the fraction of background-adjusted
+  recovered squared energy outside the planted support;
+- **lightly penalized whole-grid cosine:**
+  `max(0, C_G) * sqrt(1 - L)`;
+- **moderately penalized whole-grid cosine:**
+  `max(0, C_G) * (1 - L)`, the primary ranking metric; and
+- **support-only signed cosine:** a diagnostic for directional agreement inside
+  the planted region.
 
-### Best completed settings in the published studies
+The earlier `penalized_profile_cosine` was algebraically `max(0, C_G)`. The two
+current composite scores therefore apply an additional, explicit leakage
+penalty, with the moderate version determining the primary ordering.
 
-Each row aggregates four profiles across five scopes. Similarity values closer
-to 1 are better; off-profile energy is better when lower.
+### Best completed settings under the current ranking
 
-| Simulated games | Bootstraps | Possessions per bootstrap | Samples per possession | Mean penalized similarity | Mean support similarity | Mean off-profile energy | QUT rejections |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| 8 | 50 | 1,000 | 250 | 0.9013 | 0.9620 | 12.16% | 20 / 20 |
-| 10 | 50 | 2,500 | 250 | 0.9114 | 0.9517 | 8.26% | 20 / 20 |
+Each row aggregates four profiles across five scopes. Cosine and composite
+values are better when closer to 1; outside-energy fraction is better when
+lower.
 
-These rows are the top completed configuration within each published study,
-not evidence that one game count or sampling budget is universally optimal.
-Complete rankings and a searchable plot index are available in the
+| Simulated games | Bootstraps | Possessions per bootstrap | Samples per possession | Mean moderate score | Mean light score | Mean whole-grid cosine | Mean support cosine | Mean outside energy | QUT rejections |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 8 | 100 | 1,000 | 250 | 0.8001 | 0.8478 | 0.9011 | 0.9610 | 12.02% | 20 / 20 |
+| 10 | 50 | 2,500 | 250 | 0.8395 | 0.8741 | 0.9114 | 0.9517 | 8.26% | 20 / 20 |
+
+These rows are the top completed configuration within each study under the
+mean moderate score, not evidence that one game count or sampling budget is
+universally optimal. The current complete rankings are available for the
+[`8-game`](./profile_sim_results/tables/8_games/ranking_overall.csv) and
+[`10-game`](./profile_sim_results/tables/10_games/ranking_overall.csv) studies;
+selected maps and a searchable plot index remain available in the
 [`results/qut-profile-recovery/`](./results/qut-profile-recovery/) browser.
+
+### QUT versus thin-plate splines
+
+The five highest-ranked ten-game QUT settings were also evaluated with a
+thin-plate spline basis (`k=20`) and `GCV.Cp` smoothing on the same
+deterministic bootstrap inputs. Across the resulting 100 matched configuration,
+profile, and scope comparisons, QUT had the higher moderate score in all 100
+cases and the lower outside-energy fraction in all 100 cases. Mean moderate
+score was 0.838 for QUT versus 0.320 for splines; mean outside energy was 8.4%
+versus 52.3%.
+
+The spatial plate below holds the top-ranked setting and full-game scope fixed
+while varying the four planted profiles. Recovered maps receive the same
+off-support-median adjustment used by the metric and are unit-normalized only
+for display, so color compares spatial shape rather than coefficient magnitude.
+The black outline marks the planted support; the annotations use the
+unnormalized maps.
+
+<img src="./results/qut-vs-spline-profile-recovery/qut_vs_spline_spatial__b050_p02500_s250__full_game.png" alt="Twelve half-court heatmaps arranged as four planted-profile rows and planted, QUT, and thin-plate spline columns for the top-ranked ten-game setting. Black outlines mark planted support. QUT maps remain concentrated near the planted regions, while spline maps show broader off-support structure." width="100%">
+
+The paired plots summarize all 100 comparisons. With QUT on the horizontal
+axis and splines on the vertical axis, every primary-score point falls below
+the equality line, while every outside-energy point falls above it.
+
+<img src="./results/qut-vs-spline-profile-recovery/qut_vs_spline_paired_metrics__all100.png" alt="Two paired scatter plots for 100 matched QUT and thin-plate spline profile-recovery cases. Every spline moderate score is below its QUT counterpart, and every spline outside-support energy fraction is above its QUT counterpart. Color identifies the planted profile and marker shape identifies evaluation scope." width="100%">
+
+These are descriptive comparisons of the frozen settings, not independent
+model-selection trials: the five settings were selected from the ten-game QUT
+ranking. High-resolution PNG and PDF versions, plus figure provenance, are in
+[`results/qut-vs-spline-profile-recovery/`](./results/qut-vs-spline-profile-recovery/).
 
 ### Representative recovery map
 
@@ -215,12 +262,14 @@ ten-game configuration.
 
 <img src="./results/qut-profile-recovery/simulated-games-10__possessions-per-game-92/heatmaps/reference/bootstrap-count-0050/possessions-per-bootstrap-02500__samples-per-possession-0250.png" alt="Six court heatmaps comparing the planted reference scoring effect with recovered full-game and quarter-one-through-four coefficient maps for 10 simulated games, 50 bootstraps, 2,500 possessions per bootstrap, and 250 samples per possession." width="100%">
 
-### Sensitivity to simulation settings
+### Whole-grid sensitivity to simulation settings
 
-This overview shows penalized profile similarity for every completed reference
-profile configuration. Gray cells are combinations that were not run.
+This previously exported overview shows `max(0, C_G)` for every completed
+reference-profile configuration. Its filename and in-figure label use the
+earlier `penalized profile similarity` name; it is not the current moderate
+primary score. Gray cells are combinations that were not run.
 
-<img src="./results/qut-profile-recovery/simulated-games-10__possessions-per-game-92/heatmaps/reference/overview/penalized-profile-similarity.png" alt="Grid of heatmaps showing penalized reference-profile similarity by full-game or quarter scope, bootstrap count, possessions per bootstrap, and samples per possession; gray cells indicate configurations not run." width="100%">
+<img src="./results/qut-profile-recovery/simulated-games-10__possessions-per-game-92/heatmaps/reference/overview/penalized-profile-similarity.png" alt="Grid of heatmaps showing the nonnegative whole-grid cosine for the reference profile by full-game or quarter scope, bootstrap count, possessions per bootstrap, and samples per possession; this legacy export is not the current moderate score, and gray cells indicate configurations not run." width="100%">
 
 ## Repository guide
 
@@ -232,9 +281,11 @@ profile configuration. Gray cells are combinations that were not run.
 | [`results/foundational-single-game/`](./results/foundational-single-game/) | Plainly named movement, scoring-probability, and first-QUT figures |
 | [`results/qut-method-comparison/`](./results/qut-method-comparison/) | Plainly named coefficient maps exported from the projection comparison |
 | [`results/qut-profile-recovery/`](./results/qut-profile-recovery/) | Human-readable public heatmaps, indexes, and complete ranking tables |
+| [`results/qut-vs-spline-profile-recovery/`](./results/qut-vs-spline-profile-recovery/) | Matched QUT-versus-spline spatial and aggregate comparison figures |
 | [`scripts/export_public_results.py`](./scripts/export_public_results.py) | Rebuilds the curated result tree from local simulation artifacts |
 | [`scripts/export_foundational_figures.py`](./scripts/export_foundational_figures.py) | Re-extracts significant saved figures from the two single-game notebooks |
 | [`scripts/export_projection_figures.py`](./scripts/export_projection_figures.py) | Re-extracts the saved projection-comparison figures |
+| [`scripts/plot_qut_vs_splines.py`](./scripts/plot_qut_vs_splines.py) | Validates numeric map sources and rebuilds the matched comparison figures |
 | [`funcs.py`](./funcs.py) | Shared orientation, bootstrap, QUT, fitting, and plotting functions |
 | [`NBA_Analysis.ipynb`](./NBA_Analysis.ipynb) | Foundational single-game cleaning and exploratory movement maps |
 | [`QUT_Boostrap.ipynb`](./QUT_Boostrap.ipynb) | Earlier single-game QUT exploration retained for research history |
@@ -302,8 +353,8 @@ The tracked possession CSVs document those IDs.
   Monte Carlo budgets all limit interpretation of the resulting maps.
 
 The original tracking files are available through the community
-[SportVU Logs archive](https://github.com/ethanweed/SportVu-Logs). Possession
+[SportVU Logs archive](https://github.com/linouk23/NBA-Player-Movements/tree/master). Possession
 parsing was adapted from
-[Ryan Davis's NBA play-by-play parser](https://github.com/rd11490/NBA_Tutorials/tree/master/play_by_play).
+[Ryan Davis's NBA play-by-play parser](https://github.com/rd11490/NBA_Tutorials/tree/master/analyze_play_by_play).
 The reconstruction and QUT methodology were inspired by the
-[tomographic sports reconstruction paper](https://arxiv.org/pdf/2210.08312).
+[tomographic reconstruction paper](https://arxiv.org/pdf/2404.04455).
